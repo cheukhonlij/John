@@ -1,0 +1,6 @@
+{
+  "name": "B2B Invoice Generator & Order Manager",
+  "description": "Create and manage invoices, catalog products, manage customer database, track order history, and export professional PDF invoices.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
