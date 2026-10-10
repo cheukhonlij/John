@@ -1,10 +1,10 @@
 import React from 'react';
 import { ArrowRight, CalendarDays, ClipboardCheck, PackageMinus, PackagePlus, Plane } from 'lucide-react';
-import { Employee, Holiday, LeaveRecord, RosterShift, StockItem, StockMovement, WorkflowCheck, WorkflowTask } from '../types';
+import { Employee, Holiday, LeaveRecord, RosterShift, StockItem, WorkflowCheck, WorkflowTask } from '../types';
 import { STAFF_COLORS } from '../data/defaults';
 import { addDays, formatDateZh, formatFullDateZh, formatNumber, todayISO, weekdayOf, WEEKDAY_LABELS } from '../utils/dates';
 import { LEAVE_TYPE_LABELS, leaveCoversDate } from '../utils/leave';
-import { computeStockLevels, lowStockItems } from '../utils/inventory';
+import { lowStockItems } from '../utils/inventory';
 import { tasksForDate } from './DailyWorkflow';
 import { InventoryTab } from './Inventory';
 import { Panel, StatCard } from './ui';
@@ -19,7 +19,7 @@ interface DashboardProps {
   tasks: WorkflowTask[];
   checks: WorkflowCheck[];
   items: StockItem[];
-  movements: StockMovement[];
+  levels: Map<string, number>;
   onNavigate: (tab: NavTab, inventoryTab?: InventoryTab) => void;
 }
 
@@ -31,7 +31,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   tasks,
   checks,
   items,
-  movements,
+  levels,
   onNavigate,
 }) => {
   const today = todayISO();
@@ -53,7 +53,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const doneIds = new Set(checks.filter((c) => c.date === today).map((c) => c.taskId));
   const remainingTasks = todayTasks.filter((t) => !doneIds.has(t.id));
 
-  const levels = computeStockLevels(movements);
   const lowStock = lowStockItems(items, levels);
 
   const upcomingHolidays = holidays.filter((h) => h.date >= today).slice(0, 3);

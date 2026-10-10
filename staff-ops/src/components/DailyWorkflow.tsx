@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, Check, ChevronLeft, ChevronRight, ListChecks, Pencil, Plus, Printer, Trash2 } from 'lucide-react';
 import { Employee, RosterShift, SOP, WorkflowCheck, WorkflowTask } from '../types';
 import { STAFF_COLORS, STAFF_POSITIONS, WORKFLOW_AREAS } from '../data/defaults';
@@ -28,6 +28,8 @@ interface DailyWorkflowProps {
   currentUserId: string;
   onSaveTasks: (tasks: WorkflowTask[]) => void;
   onSaveChecks: (checks: WorkflowCheck[]) => void;
+  /** Asks for ticks from this date to be loaded (cloud mode keeps a window). */
+  onNeedHistory?: (from: string) => void;
 }
 
 export const checkId = (date: string, taskId: string) => `${date}_${taskId}`;
@@ -52,9 +54,14 @@ export const DailyWorkflow: React.FC<DailyWorkflowProps> = ({
   currentUserId,
   onSaveTasks,
   onSaveChecks,
+  onNeedHistory,
 }) => {
   const today = todayISO();
   const [date, setDate] = useState(today);
+
+  useEffect(() => {
+    onNeedHistory?.(date);
+  }, [date, onNeedHistory]);
   const [area, setArea] = useState('all');
   const [manageMode, setManageMode] = useState(false);
   const [editingTask, setEditingTask] = useState<WorkflowTask | null>(null);

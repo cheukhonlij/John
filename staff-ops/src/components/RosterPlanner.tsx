@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CalendarRange,
@@ -47,6 +47,8 @@ interface RosterPlannerProps {
   isManager: boolean;
   onSaveShifts: (shifts: RosterShift[]) => void;
   onSaveTemplates: (templates: ShiftTemplate[]) => void;
+  /** Asks for shifts from this date to be loaded (cloud mode keeps a window). */
+  onNeedHistory?: (from: string) => void;
 }
 
 const cellKey = (employeeId: string, date: string) => `${employeeId}_${date}`;
@@ -69,9 +71,15 @@ export const RosterPlanner: React.FC<RosterPlannerProps> = ({
   isManager,
   onSaveShifts,
   onSaveTemplates,
+  onNeedHistory,
 }) => {
   const today = todayISO();
   const [weekStart, setWeekStart] = useState(startOfWeek(today));
+
+  // The part-time check looks three weeks back from the week on screen.
+  useEffect(() => {
+    onNeedHistory?.(addDays(weekStart, -21));
+  }, [weekStart, onNeedHistory]);
   const [editingCell, setEditingCell] = useState<{ employeeId: string; date: string } | null>(null);
   const [weekFillFor, setWeekFillFor] = useState<Employee | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { AlertTriangle, Check, ClipboardCheck, PackageMinus, PackagePlus, Plus, Search, Trash2 } from 'lucide-react';
 import { StockItem, StockItemKind, StockMovement, StockMovementType } from '../types';
 import { STOCK_CATEGORIES } from '../data/defaults';
@@ -7,7 +7,6 @@ import {
   ITEM_KIND_LABELS,
   MOVEMENT_TYPE_LABELS,
   STOCK_STATUS_STYLES,
-  computeStockLevels,
   stockStatus,
 } from '../utils/inventory';
 import {
@@ -26,9 +25,12 @@ import {
 interface InventoryProps {
   items: StockItem[];
   movements: StockMovement[];
+  levels: Map<string, number>;
   isManager: boolean;
   currentUserName: string;
   initialTab?: InventoryTab;
+  /** Cloud mode: the log only holds movements since this date until more is loaded. */
+  history?: { movementsFrom: string; loadOlderMovements: () => void };
   onSaveItems: (items: StockItem[]) => void;
   onSaveMovements: (movements: StockMovement[]) => void;
 }
@@ -47,14 +49,15 @@ const EXPIRY_WARNING_DAYS = 14;
 export const Inventory: React.FC<InventoryProps> = ({
   items,
   movements,
+  levels,
   isManager,
   currentUserName,
   initialTab = 'stock',
+  history,
   onSaveItems,
   onSaveMovements,
 }) => {
   const [tab, setTab] = useState<InventoryTab>(initialTab);
-  const levels = useMemo(() => computeStockLevels(movements), [movements]);
   const activeItems = items.filter((i) => !i.isArchived);
 
   const addMovements = (newMovements: StockMovement[]) => onSaveMovements([...movements, ...newMovements]);
@@ -74,7 +77,7 @@ export const Inventory: React.FC<InventoryProps> = ({
           { id: 'out' as const, label: '落貨' },
           { id: 'waste' as const, label: '損耗' },
           { id: 'count' as const, label: '盤點' },
-          { id: 'log' as const, label: '紀錄', count: movements.length },
+          { id: 'log' as const, label: '紀錄' },
         ]}
         active={tab}
         onChange={setTab}
@@ -98,6 +101,7 @@ export const Inventory: React.FC<InventoryProps> = ({
       {tab === 'log' && (
         <MovementLog
           movements={movements}
+          history={history}
           isManager={isManager}
           onDelete={(id) => onSaveMovements(movements.filter((m) => m.id !== id))}
         />
@@ -123,7 +127,6 @@ const StockTab: React.FC<{
   const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState<StockItem | null>(null);
 
-  const itemsWithRecords = new Set(movements.map((m) => m.itemId));
   const categories = Array.from(new Set(items.map((i) => i.category)));
   const q = search.trim().toLowerCase();
 
@@ -134,13 +137,13 @@ const StockTab: React.FC<{
     .filter((i) => !q || i.name.toLowerCase().includes(q) || i.category.toLowerCase().includes(q))
     .map((i) => {
       const qty = levels.get(i.id) || 0;
-      return { item: i, qty, status: stockStatus(qty, i.reorderLevel, itemsWithRecords.has(i.id)) };
+      return { item: i, qty, status: stockStatus(qty, i.reorderLevel, levels.has(i.id)) };
     })
     .filter((r) => !lowOnly || r.status === 'low' || r.status === 'out');
 
   const alertCount = items.filter((i) => {
     if (i.isArchived) return false;
-    const s = stockStatus(levels.get(i.id) || 0, i.reorderLevel, itemsWithRecords.has(i.id));
+    const s = stockStatus(levels.get(i.id) || 0, i.reorderLevel, levels.has(i.id));
     return s === 'low' || s === 'out';
   }).length;
 
@@ -711,9 +714,10 @@ const PAGE_SIZE = 100;
 
 const MovementLog: React.FC<{
   movements: StockMovement[];
+  history?: { movementsFrom: string; loadOlderMovements: () => void };
   isManager: boolean;
   onDelete: (id: string) => void;
-}> = ({ movements, isManager, onDelete }) => {
+}> = ({ movements, history, isManager, onDelete }) => {
   const [type, setType] = useState<'all' | StockMovementType>('all');
   const [search, setSearch] = useState('');
   const [from, setFrom] = useState('');
@@ -816,6 +820,14 @@ const MovementLog: React.FC<{
                 </button>
               </div>
             )}
+          </div>
+        )}
+        {history && rows.length <= limit && (
+          <div className="p-3 text-center border-t border-slate-100 space-y-2">
+            <p className="text-xs text-slate-500 font-medium">顯示 {formatDateZh(history.movementsFrom, false)} 之後嘅紀錄</p>
+            <button onClick={history.loadOlderMovements} className={`${secondaryButtonClass} mx-auto`}>
+              載入更早紀錄
+            </button>
           </div>
         )}
       </Panel>

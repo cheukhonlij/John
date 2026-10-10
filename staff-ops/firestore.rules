@@ -1,0 +1,105 @@
+rules_version = '2';
+
+// Access for the staff operations app.
+//   staff   – read everything; tick workflow items, record stock movements,
+//             submit (and cancel their own pending) leave requests
+//   manager – everything, including roster, approvals, SOPs and accounts
+// Signing up alone grants nothing: a users/{uid} profile, written by a
+// manager, is what gives an account access.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function profilePath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+    function role() {
+      return get(profilePath()).data.role;
+    }
+    function isStaff() {
+      return signedIn() && exists(profilePath()) && role() in ['staff', 'manager'];
+    }
+    function isManager() {
+      return signedIn() && exists(profilePath()) && role() == 'manager';
+    }
+    function bootstrapPath() {
+      return /databases/$(database)/documents/config/bootstrap;
+    }
+
+    // One-time setup: the very first account may make itself manager, in the
+    // same batch that creates config/bootstrap. After that only managers add users.
+    match /config/bootstrap {
+      allow read: if true;
+      allow create: if signedIn()
+        && getAfter(profilePath()).data.role == 'manager';
+    }
+
+    match /config/settings {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+
+    match /users/{uid} {
+      allow read: if isStaff() || (signedIn() && request.auth.uid == uid);
+      allow create: if isManager()
+        || (signedIn()
+            && request.auth.uid == uid
+            && request.resource.data.role == 'manager'
+            && !exists(bootstrapPath())
+            && existsAfter(bootstrapPath()));
+      allow update, delete: if isManager();
+    }
+
+    // Planning data: everyone reads, managers change.
+    match /employees/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /shiftTemplates/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /shifts/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /holidays/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /workflowTasks/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /sops/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /stockItems/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+
+    // Day-to-day records staff create themselves.
+    match /workflowChecks/{id} {
+      allow read, write: if isStaff();
+    }
+    match /movements/{id} {
+      allow read, create: if isStaff();
+      allow update, delete: if isManager();
+    }
+    // Stock totals move with every movement staff record, so staff update them too.
+    match /stockLevels/{id} {
+      allow read, write: if isStaff();
+    }
+    match /leaves/{id} {
+      allow read: if isStaff();
+      allow create: if isManager()
+        || (isStaff() && request.resource.data.status == 'pending');
+      allow update: if isManager();
+      allow delete: if isManager()
+        || (isStaff() && resource.data.status == 'pending');
+    }
+  }
+}

@@ -1,32 +1,20 @@
 import React, { useState } from 'react';
-import { Lock, LogOut, Menu, X } from 'lucide-react';
-import {
-  AppSettings,
-  Employee,
-  Holiday,
-  LeaveRecord,
-  RosterShift,
-  ShiftTemplate,
-  SOP,
-  StockItem,
-  StockMovement,
-  WorkflowCheck,
-  WorkflowTask,
-} from './types';
+import { KeyRound, Lock, LogOut, Menu, X } from 'lucide-react';
 import {
   DEFAULT_EMPLOYEES,
   DEFAULT_HOLIDAYS,
   DEFAULT_LEAVES,
   DEFAULT_MOVEMENTS,
   DEFAULT_ROSTER,
-  DEFAULT_SETTINGS,
   DEFAULT_SHIFT_TEMPLATES,
   DEFAULT_SOPS,
   DEFAULT_STOCK_ITEMS,
   DEFAULT_WORKFLOW_TASKS,
 } from './data/defaults';
-import { STORAGE_KEYS } from './utils/storage';
+import { AppData, useCloudAppData, useLocalAppData } from './data/store';
 import { useStoredState } from './hooks/useStoredState';
+import { cloudEnabled } from './lib/firebase';
+import { UserProfile, signOutUser, useAuthSession } from './lib/cloud';
 import { Dashboard, NavTab } from './components/Dashboard';
 import { RosterPlanner } from './components/RosterPlanner';
 import { DailyWorkflow } from './components/DailyWorkflow';
@@ -34,11 +22,9 @@ import { Inventory, InventoryTab } from './components/Inventory';
 import { LeaveManager } from './components/LeaveManager';
 import { SOPLibrary } from './components/SOPLibrary';
 import { StaffManager } from './components/StaffManager';
-import { Settings } from './components/Settings';
+import { CloudSettings, LocalSettings } from './components/Settings';
+import { ChangePasswordModal, LoadingScreen, LoginScreen, NoAccessScreen } from './components/CloudAuth';
 import { Modal, inputClass, primaryButtonClass } from './components/ui';
-
-// Which staff member is using this device; a per-device convenience, not a login.
-const CURRENT_USER_KEY = 'todays_ops_current_user_v1';
 
 const NAV_ITEMS: { id: NavTab; label: string; managerOnly?: boolean }[] = [
   { id: 'dashboard', label: '今日' },
@@ -52,65 +38,197 @@ const NAV_ITEMS: { id: NavTab; label: string; managerOnly?: boolean }[] = [
 ];
 
 export default function App() {
-  const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
-  const [inventoryTab, setInventoryTab] = useState<InventoryTab>('stock');
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  return cloudEnabled ? <CloudApp /> : <LocalApp />;
+}
+
+// ---------- Firebase mode: real accounts, roles enforced by security rules ----------
+
+const CloudApp: React.FC = () => {
+  const { user, profile } = useAuthSession();
+  if (user === undefined || (user && profile === undefined)) return <LoadingScreen />;
+  if (!user) return <LoginScreen />;
+  if (!profile || profile.role === 'disabled') return <NoAccessScreen disabled={profile?.role === 'disabled'} />;
+  return <CloudSession profile={profile} />;
+};
+
+const CloudSession: React.FC<{ profile: UserProfile }> = ({ profile }) => {
+  const data = useCloudAppData();
+  const [changingPassword, setChangingPassword] = useState(false);
+  const isManager = profile.role === 'manager';
+  const me = data.employees.find((e) => e.id === profile.employeeId);
+
+  const controls = (compact: boolean) => (
+    <>
+      <span className={`text-xs font-black text-slate-500 ${compact ? 'block' : ''}`}>
+        {me?.name || profile.username}
+        <span className={`ml-2 px-1.5 py-0.5 text-[10px] ${isManager ? 'bg-amber-400 text-slate-900' : 'bg-slate-100 text-slate-600'}`}>
+          {isManager ? '主管' : '員工'}
+        </span>
+      </span>
+      <button onClick={() => setChangingPassword(true)} className="px-3 py-2 border border-slate-200 text-xs font-black flex items-center gap-1.5 cursor-pointer hover:border-slate-900">
+        <KeyRound className="w-4 h-4" />
+        改密碼
+      </button>
+      <button onClick={() => signOutUser()} className="px-3 py-2 border border-slate-200 text-xs font-black flex items-center gap-1.5 cursor-pointer hover:border-slate-900">
+        <LogOut className="w-4 h-4" />
+        登出
+      </button>
+    </>
+  );
+
+  return (
+    <>
+      <Shell
+        data={data}
+        isManager={isManager}
+        currentUserId={profile.employeeId}
+        headerControls={controls(false)}
+        mobileControls={<div className="flex flex-wrap items-center gap-2">{controls(true)}</div>}
+        settingsPage={
+          <CloudSettings
+            settings={data.settings}
+            employees={data.employees}
+            currentUid={profile.uid}
+            onSaveSettings={data.saveSettings}
+          />
+        }
+      />
+      {changingPassword && <ChangePasswordModal onClose={() => setChangingPassword(false)} />}
+    </>
+  );
+};
+
+// ---------- Browser-only mode: one shared device, PIN-gated manager mode ----------
+
+// Which staff member is using this device; a per-device convenience, not a login.
+const CURRENT_USER_KEY = 'todays_ops_current_user_v1';
+
+const LocalApp: React.FC = () => {
+  const data = useLocalAppData();
   // Manager mode lasts until locked or the page reloads.
   const [isManager, setIsManager] = useState(false);
   const [pinPromptOpen, setPinPromptOpen] = useState(false);
-
-  const [settings, setSettings] = useStoredState<AppSettings>(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
-  const [employees, setEmployees] = useStoredState<Employee[]>(STORAGE_KEYS.EMPLOYEES, DEFAULT_EMPLOYEES);
-  const [templates, setTemplates] = useStoredState<ShiftTemplate[]>(STORAGE_KEYS.SHIFT_TEMPLATES, DEFAULT_SHIFT_TEMPLATES);
-  const [shifts, setShifts] = useStoredState<RosterShift[]>(STORAGE_KEYS.ROSTER, DEFAULT_ROSTER);
-  const [leaves, setLeaves] = useStoredState<LeaveRecord[]>(STORAGE_KEYS.LEAVES, DEFAULT_LEAVES);
-  const [holidays, setHolidays] = useStoredState<Holiday[]>(STORAGE_KEYS.HOLIDAYS, DEFAULT_HOLIDAYS);
-  const [tasks, setTasks] = useStoredState<WorkflowTask[]>(STORAGE_KEYS.WORKFLOW_TASKS, DEFAULT_WORKFLOW_TASKS);
-  const [checks, setChecks] = useStoredState<WorkflowCheck[]>(STORAGE_KEYS.WORKFLOW_CHECKS, []);
-  const [sops, setSops] = useStoredState<SOP[]>(STORAGE_KEYS.SOPS, DEFAULT_SOPS);
-  const [stockItems, setStockItems] = useStoredState<StockItem[]>(STORAGE_KEYS.STOCK_ITEMS, DEFAULT_STOCK_ITEMS);
-  const [movements, setMovements] = useStoredState<StockMovement[]>(STORAGE_KEYS.MOVEMENTS, DEFAULT_MOVEMENTS);
   const [currentUserId, setCurrentUserId] = useStoredState<string>(CURRENT_USER_KEY, '');
 
-  const activeEmployees = employees.filter((e) => e.isActive);
+  const activeEmployees = data.employees.filter((e) => e.isActive);
   const currentUser = activeEmployees.find((e) => e.id === currentUserId);
-  const pendingLeaveCount = leaves.filter((l) => l.status === 'pending').length;
-
-  const navigate = (tab: NavTab, invTab?: InventoryTab) => {
-    if (tab === 'inventory') setInventoryTab(invTab || 'stock');
-    setCurrentTab(tab);
-    setMobileMenuOpen(false);
-    window.scrollTo({ top: 0 });
-  };
-
-  const lockManager = () => {
-    setIsManager(false);
-    if (currentTab === 'settings') setCurrentTab('dashboard');
-  };
 
   const clearRecords = () => {
-    setEmployees([]);
-    setShifts([]);
-    setLeaves([]);
-    setChecks([]);
-    setMovements([]);
+    data.saveEmployees([]);
+    data.saveShifts([]);
+    data.saveLeaves([]);
+    data.saveChecks([]);
+    data.saveMovements([]);
     setCurrentUserId('');
   };
 
   const resetDemo = () => {
-    setEmployees(DEFAULT_EMPLOYEES);
-    setTemplates(DEFAULT_SHIFT_TEMPLATES);
-    setShifts(DEFAULT_ROSTER);
-    setLeaves(DEFAULT_LEAVES);
-    setHolidays(DEFAULT_HOLIDAYS);
-    setTasks(DEFAULT_WORKFLOW_TASKS);
-    setChecks([]);
-    setSops(DEFAULT_SOPS);
-    setStockItems(DEFAULT_STOCK_ITEMS);
-    setMovements(DEFAULT_MOVEMENTS);
+    data.saveEmployees(DEFAULT_EMPLOYEES);
+    data.saveTemplates(DEFAULT_SHIFT_TEMPLATES);
+    data.saveShifts(DEFAULT_ROSTER);
+    data.saveLeaves(DEFAULT_LEAVES);
+    data.saveHolidays(DEFAULT_HOLIDAYS);
+    data.saveTasks(DEFAULT_WORKFLOW_TASKS);
+    data.saveChecks([]);
+    data.saveSops(DEFAULT_SOPS);
+    data.saveStockItems(DEFAULT_STOCK_ITEMS);
+    data.saveMovements(DEFAULT_MOVEMENTS);
   };
 
+  const userPicker = (className: string) => (
+    <label className="flex items-center gap-2 text-xs font-black text-slate-500">
+      我係
+      <select value={currentUser ? currentUserId : ''} onChange={(e) => setCurrentUserId(e.target.value)} className={className}>
+        <option value="">（揀名）</option>
+        {activeEmployees.map((e) => (
+          <option key={e.id} value={e.id}>
+            {e.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
+  const managerButton = (full: boolean) =>
+    isManager ? (
+      <button
+        onClick={() => setIsManager(false)}
+        className={`px-3 py-2 bg-amber-400 text-slate-900 text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer hover:bg-amber-300 ${full ? 'w-full' : ''}`}
+      >
+        <LogOut className="w-4 h-4" />
+        主管模式中 · 鎖上
+      </button>
+    ) : (
+      <button
+        onClick={() => setPinPromptOpen(true)}
+        className={`px-3 py-2 border border-slate-200 text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer hover:border-slate-900 ${full ? 'w-full' : ''}`}
+      >
+        <Lock className="w-4 h-4" />
+        主管模式
+      </button>
+    );
+
+  return (
+    <>
+      <Shell
+        data={data}
+        isManager={isManager}
+        currentUserId={currentUser ? currentUserId : ''}
+        headerControls={
+          <>
+            {userPicker('border border-slate-200 px-2 py-1.5 text-sm font-bold text-slate-900 bg-slate-50')}
+            {managerButton(false)}
+          </>
+        }
+        mobileControls={
+          <div className="space-y-3">
+            {userPicker('flex-1 border border-slate-200 px-2 py-2 text-sm font-bold text-slate-900 bg-slate-50')}
+            {managerButton(true)}
+          </div>
+        }
+        settingsPage={
+          <LocalSettings settings={data.settings} onSaveSettings={data.saveSettings} onClearRecords={clearRecords} onResetDemo={resetDemo} />
+        }
+      />
+      {pinPromptOpen && (
+        <PinPrompt
+          expectedPin={data.settings.managerPin}
+          onClose={() => setPinPromptOpen(false)}
+          onSuccess={() => {
+            setIsManager(true);
+            setPinPromptOpen(false);
+          }}
+        />
+      )}
+    </>
+  );
+};
+
+// ---------- Shared shell: header, navigation and pages ----------
+
+const Shell: React.FC<{
+  data: AppData;
+  isManager: boolean;
+  currentUserId: string;
+  headerControls: React.ReactNode;
+  mobileControls: React.ReactNode;
+  settingsPage: React.ReactNode;
+}> = ({ data, isManager, currentUserId, headerControls, mobileControls, settingsPage }) => {
+  const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
+  const [inventoryTab, setInventoryTab] = useState<InventoryTab>('stock');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const currentUser = data.employees.find((e) => e.id === currentUserId);
+  const pendingLeaveCount = data.leaves.filter((l) => l.status === 'pending').length;
   const navItems = NAV_ITEMS.filter((n) => !n.managerOnly || isManager);
+  const tab = currentTab === 'settings' && !isManager ? 'dashboard' : currentTab;
+
+  const navigate = (next: NavTab, invTab?: InventoryTab) => {
+    if (next === 'inventory') setInventoryTab(invTab || 'stock');
+    setCurrentTab(next);
+    setMobileMenuOpen(false);
+    window.scrollTo({ top: 0 });
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-900">
@@ -119,73 +237,19 @@ export default function App() {
           <button onClick={() => navigate('dashboard')} className="flex items-center gap-3 cursor-pointer text-left">
             <div className="w-10 h-10 bg-slate-900 text-white flex items-center justify-center font-black tracking-tighter">TL</div>
             <div>
-              <div className="text-lg sm:text-xl font-black tracking-tighter uppercase leading-tight">{settings.companyName}</div>
+              <div className="text-lg sm:text-xl font-black tracking-tighter uppercase leading-tight">{data.settings.companyName}</div>
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">員工營運系統 · Staff Ops</p>
             </div>
           </button>
 
-          <div className="hidden md:flex items-center gap-3">
-            <label className="flex items-center gap-2 text-xs font-black text-slate-500">
-              我係
-              <select
-                value={currentUser ? currentUserId : ''}
-                onChange={(e) => setCurrentUserId(e.target.value)}
-                className="border border-slate-200 px-2 py-1.5 text-sm font-bold text-slate-900 bg-slate-50"
-              >
-                <option value="">（揀名）</option>
-                {activeEmployees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {isManager ? (
-              <button onClick={lockManager} className="px-3 py-2 bg-amber-400 text-slate-900 text-xs font-black flex items-center gap-1.5 cursor-pointer hover:bg-amber-300">
-                <LogOut className="w-4 h-4" />
-                主管模式中 · 鎖上
-              </button>
-            ) : (
-              <button onClick={() => setPinPromptOpen(true)} className="px-3 py-2 border border-slate-200 text-xs font-black flex items-center gap-1.5 cursor-pointer hover:border-slate-900">
-                <Lock className="w-4 h-4" />
-                主管模式
-              </button>
-            )}
-          </div>
+          <div className="hidden md:flex items-center gap-3">{headerControls}</div>
 
           <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="md:hidden p-2 cursor-pointer">
             {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
           </button>
         </div>
 
-        {mobileMenuOpen && (
-          <div className="md:hidden px-4 pb-4 space-y-3 border-t border-slate-200 pt-3">
-            <label className="flex items-center gap-2 text-xs font-black text-slate-500">
-              我係
-              <select
-                value={currentUser ? currentUserId : ''}
-                onChange={(e) => setCurrentUserId(e.target.value)}
-                className="flex-1 border border-slate-200 px-2 py-2 text-sm font-bold text-slate-900 bg-slate-50"
-              >
-                <option value="">（揀名）</option>
-                {activeEmployees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {isManager ? (
-              <button onClick={lockManager} className="w-full px-3 py-2.5 bg-amber-400 text-xs font-black cursor-pointer">
-                主管模式中 · 鎖上
-              </button>
-            ) : (
-              <button onClick={() => setPinPromptOpen(true)} className="w-full px-3 py-2.5 border border-slate-300 text-xs font-black cursor-pointer">
-                🔒 主管模式
-              </button>
-            )}
-          </div>
-        )}
+        {mobileMenuOpen && <div className="md:hidden px-4 pb-4 border-t border-slate-200 pt-3">{mobileControls}</div>}
 
         <nav className="max-w-7xl mx-auto px-2 sm:px-6 flex gap-1 overflow-x-auto">
           {navItems.map((item) => (
@@ -193,7 +257,7 @@ export default function App() {
               key={item.id}
               onClick={() => navigate(item.id)}
               className={`px-3.5 py-3 text-sm font-black whitespace-nowrap border-b-[3px] transition cursor-pointer ${
-                currentTab === item.id ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-900'
+                tab === item.id ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-900'
               }`}
             >
               {item.label}
@@ -206,90 +270,92 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto w-full p-4 sm:p-8 flex-1">
-        {currentTab === 'dashboard' && (
-          <Dashboard
-            employees={employees}
-            shifts={shifts}
-            leaves={leaves}
-            holidays={holidays}
-            tasks={tasks}
-            checks={checks}
-            items={stockItems}
-            movements={movements}
-            onNavigate={navigate}
-          />
-        )}
-        {currentTab === 'roster' && (
-          <RosterPlanner
-            employees={employees}
-            shifts={shifts}
-            templates={templates}
-            leaves={leaves}
-            holidays={holidays}
-            isManager={isManager}
-            onSaveShifts={setShifts}
-            onSaveTemplates={setTemplates}
-          />
-        )}
-        {currentTab === 'workflow' && (
-          <DailyWorkflow
-            tasks={tasks}
-            checks={checks}
-            sops={sops}
-            employees={employees}
-            shifts={shifts}
-            isManager={isManager}
-            currentUserId={currentUser ? currentUserId : ''}
-            onSaveTasks={setTasks}
-            onSaveChecks={setChecks}
-          />
-        )}
-        {currentTab === 'inventory' && (
-          <Inventory
-            key={inventoryTab}
-            initialTab={inventoryTab}
-            items={stockItems}
-            movements={movements}
-            isManager={isManager}
-            currentUserName={currentUser?.name || ''}
-            onSaveItems={setStockItems}
-            onSaveMovements={setMovements}
-          />
-        )}
-        {currentTab === 'leave' && (
-          <LeaveManager
-            employees={employees}
-            leaves={leaves}
-            holidays={holidays}
-            isManager={isManager}
-            currentUserId={currentUser ? currentUserId : ''}
-            onSaveLeaves={setLeaves}
-            onSaveHolidays={setHolidays}
-          />
-        )}
-        {currentTab === 'sop' && <SOPLibrary sops={sops} isManager={isManager} onSaveSops={setSops} />}
-        {currentTab === 'staff' && (
-          <StaffManager employees={employees} leaves={leaves} shifts={shifts} isManager={isManager} onSaveEmployees={setEmployees} />
-        )}
-        {currentTab === 'settings' && isManager && (
-          <Settings settings={settings} onSaveSettings={setSettings} onClearRecords={clearRecords} onResetDemo={resetDemo} />
+        {!data.ready ? (
+          <div className="py-24 flex justify-center text-slate-500 font-black text-sm">載入中…</div>
+        ) : (
+          <>
+            {tab === 'dashboard' && (
+              <Dashboard
+                employees={data.employees}
+                shifts={data.shifts}
+                leaves={data.leaves}
+                holidays={data.holidays}
+                tasks={data.tasks}
+                checks={data.checks}
+                items={data.stockItems}
+                levels={data.levels}
+                onNavigate={navigate}
+              />
+            )}
+            {tab === 'roster' && (
+              <RosterPlanner
+                employees={data.employees}
+                shifts={data.shifts}
+                templates={data.templates}
+                leaves={data.leaves}
+                holidays={data.holidays}
+                isManager={isManager}
+                onSaveShifts={data.saveShifts}
+                onSaveTemplates={data.saveTemplates}
+                onNeedHistory={data.history?.ensureShiftsFrom}
+              />
+            )}
+            {tab === 'workflow' && (
+              <DailyWorkflow
+                tasks={data.tasks}
+                checks={data.checks}
+                sops={data.sops}
+                employees={data.employees}
+                shifts={data.shifts}
+                isManager={isManager}
+                currentUserId={currentUserId}
+                onSaveTasks={data.saveTasks}
+                onSaveChecks={data.saveChecks}
+                onNeedHistory={data.history?.ensureChecksFrom}
+              />
+            )}
+            {tab === 'inventory' && (
+              <Inventory
+                key={inventoryTab}
+                initialTab={inventoryTab}
+                items={data.stockItems}
+                movements={data.movements}
+                levels={data.levels}
+                history={data.history}
+                isManager={isManager}
+                currentUserName={currentUser?.name || ''}
+                onSaveItems={data.saveStockItems}
+                onSaveMovements={data.saveMovements}
+              />
+            )}
+            {tab === 'leave' && (
+              <LeaveManager
+                employees={data.employees}
+                leaves={data.leaves}
+                holidays={data.holidays}
+                isManager={isManager}
+                currentUserId={currentUserId}
+                onSaveLeaves={data.saveLeaves}
+                onSaveHolidays={data.saveHolidays}
+              />
+            )}
+            {tab === 'sop' && <SOPLibrary sops={data.sops} isManager={isManager} onSaveSops={data.saveSops} />}
+            {tab === 'staff' && (
+              <StaffManager
+                employees={data.employees}
+                leaves={data.leaves}
+                shifts={data.shifts}
+                isManager={isManager}
+                onSaveEmployees={data.saveEmployees}
+              />
+            )}
+            {tab === 'settings' && isManager && settingsPage}
+          </>
         )}
       </main>
-
-      {pinPromptOpen && (
-        <PinPrompt
-          expectedPin={settings.managerPin}
-          onClose={() => setPinPromptOpen(false)}
-          onSuccess={() => {
-            setIsManager(true);
-            setPinPromptOpen(false);
-            setMobileMenuOpen(false);
-          }}
-        />
-      )}
     </div>
   );
-}
+};
 
 const PinPrompt: React.FC<{ expectedPin: string; onClose: () => void; onSuccess: () => void }> = ({
   expectedPin,
