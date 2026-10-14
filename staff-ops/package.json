@@ -8,8 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "deploy": "vite build && npx firebase-tools deploy --only hosting,firestore:rules",
-    "emulators": "npx firebase-tools emulators:start --only auth,firestore --project demo-staff-ops"
+    "deploy": "vite build && npx --yes firebase-tools@14 deploy --only hosting,firestore:rules",
+    "emulators": "npx --yes firebase-tools@14 emulators:start --only auth,firestore --project demo-staff-ops",
+    "test:rules": "npx --yes firebase-tools@14 emulators:exec --only auth,firestore --project demo-staff-ops \"node tests/rules.test.mjs\""
   },
   "dependencies": {
     "firebase": "^12.19.0",
