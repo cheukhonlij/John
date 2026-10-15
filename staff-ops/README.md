@@ -72,11 +72,40 @@
 - **由單機版轉上雲端**：喺單機版「設定 → 匯出備份」，再喺雲端版「設定 → 由備份還原」。
 - **存貨數字唔對**：「設定 → 重新計算存貨」會由全部紀錄重新計。
 
+## 自動上載（GitHub）
+
+設定好之後，喺 GitHub 合併（Merge）改動，網站同保安規則就會自動上載，唔使再開電腦行 `bun run deploy`。
+每個改動到 `staff-ops/` 嘅 PR 亦會自動做 TypeScript 檢查、build 同保安規則測試。
+未設定之前，檢查照做，上載會自動跳過。
+
+**A. 整一條 Google 服務帳戶金鑰（約 5 分鐘）**
+
+1. 打開 <https://console.cloud.google.com/iam-admin/serviceaccounts>，用開 Firebase 嗰個 Google 帳戶登入，左上角揀專案 `todays-staff-ops`。
+2. 撳「建立服務帳戶」（Create service account）。名稱輸入 `github-deploy`，撳「建立並繼續」（Create and continue）。
+3. 「角色」（Role）搜尋並揀 **Firebase Admin**，撳「繼續」→「完成」（Done）。
+4. 喺列表撳 `github-deploy@…` →「金鑰」（Keys）分頁 →「新增金鑰」（Add key）→「建立新的金鑰」→ 揀 **JSON** →「建立」。
+   電腦會下載一個 `.json` 檔。呢個檔等於一條鎖匙，唔好傳俾任何人。
+
+**B. 喺 GitHub 加兩個 secret（約 3 分鐘）**
+
+1. 打開 <https://github.com/cheukhonlij/John/settings/secrets/actions>，撳「New repository secret」。
+2. Name 填 `FIREBASE_SERVICE_ACCOUNT`；Secret 貼上 A 步個 `.json` 檔嘅全部內容（用記事本／文字編輯打開再全選複製）→「Add secret」。
+3. 再撳「New repository secret」：Name 填 `STAFF_OPS_ENV`；Secret 貼上電腦 `staff-ops/.env.local` 嘅全部內容 →「Add secret」。
+4. 刪除電腦入面下載咗嘅 `.json` 金鑰檔。
+
+**C. 試一次**
+
+1. 打開 <https://github.com/cheukhonlij/John/actions>，左邊揀「staff-ops」，右邊撳「Run workflow」→ 揀 `main` →「Run workflow」。
+2. 等 3–5 分鐘：綠色 ✓ 即係上載成功；紅色 ✗ 就撳入去，將錯誤畫面截圖俾 Claude 睇。
+
+以後改完功能，只要喺 GitHub 合併 PR，幾分鐘後網站就會自動更新。
+
 ## 開發
 
 ```bash
 bun run dev        # http://localhost:3001（冇 .env.local 就係單機模式）
 bun run lint       # TypeScript 檢查
+bun run test:rules # 保安規則測試（用 Firebase 模擬器，需要 Java）
 bun run emulators  # 本機 Firebase 模擬器；.env.local 加 VITE_FIREBASE_EMULATOR=true 就會連去模擬器
 ```
 

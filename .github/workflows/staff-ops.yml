@@ -1,0 +1,107 @@
+# Staff operations app (staff-ops/): check every change, deploy main to Firebase.
+#
+# Pull requests: typecheck, build and test the Firestore security rules.
+# Pushes to main: the same checks, then deploy the website and the rules.
+#
+# Deploying needs two repository secrets (Settings → Secrets and variables → Actions):
+#   STAFF_OPS_ENV            the contents of staff-ops/.env.local (the VITE_FIREBASE_* lines)
+#   FIREBASE_SERVICE_ACCOUNT the JSON key of a service account with the "Firebase Admin" role
+# Without them the deploy job skips itself with a notice instead of failing.
+
+name: staff-ops
+
+on:
+  pull_request:
+    paths:
+      - 'staff-ops/**'
+      - '.github/workflows/staff-ops.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'staff-ops/**'
+      - '.github/workflows/staff-ops.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: staff-ops
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      # The Firestore emulator used by the rules test runs on Java.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run build
+      - run: bun run test:rules
+
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # One deploy at a time, and never cancel one halfway through.
+    concurrency:
+      group: staff-ops-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check deploy secrets
+        id: secrets
+        working-directory: .
+        env:
+          STAFF_OPS_ENV: ${{ secrets.STAFF_OPS_ENV }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$STAFF_OPS_ENV" ] || [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::notice::Skipping deploy: add the STAFF_OPS_ENV and FIREBASE_SERVICE_ACCOUNT secrets to turn on automatic deploys (see staff-ops/README.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ready == 'true'
+      - uses: oven-sh/setup-bun@v2
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+        if: steps.secrets.outputs.ready == 'true'
+
+      - name: Write Firebase web config
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          STAFF_OPS_ENV: ${{ secrets.STAFF_OPS_ENV }}
+        run: |
+          printf '%s\n' "$STAFF_OPS_ENV" > .env.local
+          project_id=$(grep -E '^VITE_FIREBASE_PROJECT_ID=' .env.local | cut -d= -f2- | tr -d '[:space:]"')
+          if [ -z "$project_id" ]; then
+            echo "::error::STAFF_OPS_ENV has no VITE_FIREBASE_PROJECT_ID line."
+            exit 1
+          fi
+          echo "PROJECT_ID=$project_id" >> "$GITHUB_ENV"
+
+      - run: bun run build
+        if: steps.secrets.outputs.ready == 'true'
+
+      - name: Deploy website and security rules
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          key_file="$RUNNER_TEMP/firebase-service-account.json"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$key_file"
+          export GOOGLE_APPLICATION_CREDENTIALS="$key_file"
+          npx --yes firebase-tools@14 deploy --only hosting,firestore:rules --project "$PROJECT_ID" --non-interactive

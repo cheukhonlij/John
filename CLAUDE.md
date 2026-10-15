@@ -1,0 +1,93 @@
+# CLAUDE.md
+
+Notes for Claude sessions working in this repository. Read before changing anything.
+
+## Who this is for
+
+The owner is John (TODAY'S FOOD LAB, a food production company in Hong Kong). He is
+not a programmer and writes in Cantonese. Reply in Hong Kong Cantonese with Traditional
+Chinese characters, in plain words, and explain what he has to click or run step by step.
+
+## Two separate apps — keep them apart
+
+| Folder | App | Users | Hosting |
+| --- | --- | --- | --- |
+| repo root (`src/`, `index.html`) | B2B invoice system: customers, product prices, invoices, PDFs | Owner only | Google AI Studio / Cloud Run |
+| `staff-ops/` | Staff operations: roster, leave, daily workflow, SOP, inventory | All staff | Firebase Hosting (`todays-staff-ops`) |
+
+- Staff must never see customer prices, product prices or salaries. Nothing from the invoice
+  app may be imported into `staff-ops/`, and `staff-ops/` stores no pay data.
+- Each app has its own `package.json`, lockfile and build. The root `tsconfig.json` excludes
+  `staff-ops/`. Work on one app does not touch the other unless asked.
+
+## Confidential content — never commit it
+
+The company's SOPs and production process details (e.g. the chicken breast SOP) are
+confidential ("所有工作流程未經同意不得流出、轉載、分享").
+
+- Never put them in the repo, in `staff-ops/src/data/defaults.ts`, in tests or in commit
+  messages. Anything in `src/` ships in the public JavaScript bundle, readable without login.
+- To load real content, generate a backup-format JSON file outside the repo and have a manager
+  import it in the app: 設定 → 由備份還原. Format: `{"app":"todays-staff-ops","version":1,
+  "data":{"<storage key>":[...records]}}` with keys from `staff-ops/src/utils/storage.ts`.
+  Cloud restore adds or overwrites by id and never deletes; browser-only restore replaces each
+  included list, so include the full list for that key. Reuse a record's id to replace it.
+- `defaults.ts` holds generic sample data only.
+
+## staff-ops architecture
+
+React 19 + TypeScript (strict) + Vite 6 + Tailwind CSS 4 + lucide-react, managed with bun.
+
+- Two modes, picked at build time by `staff-ops/.env.local` (`VITE_FIREBASE_*`, see `.env.example`):
+  - Cloud mode (production): Firebase Auth (username + password; usernames map to
+    `<name>@staff.todaysfoodlab.app`) and Firestore with live sync and offline cache.
+  - Browser-only mode: localStorage on one device, manager mode behind a PIN.
+- `src/data/store.ts` gives both modes one `AppData` shape (arrays plus `save*` functions that take
+  the whole new array). `useCloudCollection` in `src/lib/cloud.ts` diffs against the records that
+  render saw, so another device's new records are never deleted. Components should not care
+  which mode is running.
+- Cloud mode keeps only recent shifts (56 days), workflow ticks (14 days) and stock movements
+  (60 days, plus batches near expiry) live; screens widen the window through `data.history`.
+- Stock totals live in `stockLevels/{itemId}` and are incremented in the same batch as each
+  movement (`stockLevelOps`); Settings → 重新計算存貨 rebuilds them from all movements.
+- `firestore.rules` is the real permission check. Staff read everything and may create workflow
+  ticks, stock movements and pending leave; managers do everything else. The first account
+  becomes manager exactly once via `config/bootstrap`. Any new collection needs a rules block
+  and a case in `tests/rules.test.mjs`.
+- Production data already exists in Firestore. Schema changes must stay compatible with existing
+  documents (add optional fields; never rename or repurpose fields without a migration).
+- Leave and labour-law logic is in `src/utils/leave.ts` (HK Employment Ordinance: annual leave
+  7→14 days by service year, sick-day accrual capped at 120, continuous contract = 68 hours in
+  4 weeks from 18 Jan 2026). Statutory holidays are listed for 2026–2027 in `defaults.ts`;
+  they need adding each year (Good Friday becomes statutory in 2028).
+
+## UI text
+
+- All UI text is Hong Kong Cantonese in Traditional Chinese. Match the existing tone (「撳」「睇」「嘅」).
+- Type Chinese characters directly. Do not hand-write `\uXXXX` escapes: earlier sessions produced
+  wrong look-alike characters that way (撳, 俾, 冇, 啱 and 剔 each came out as a different
+  character, one of them vulgar). Proofread every Chinese string you add.
+
+## Commands (run inside `staff-ops/`)
+
+```bash
+bun install            # dependencies (use bun; bun.lock is the lockfile)
+bun run lint           # TypeScript check
+bun run build          # production build into dist/
+bun run test:rules     # Firestore rules tests on the emulators (needs Java)
+bun run dev            # dev server on :3001 (browser-only mode without .env.local)
+bun run emulators      # local Firebase emulators; set VITE_FIREBASE_EMULATOR=true in .env.local
+```
+
+Before pushing: lint, build and rules tests must pass. For UI changes, also run the app and click
+through the change in both modes (cloud mode against the emulators). In Claude Code cloud sessions
+Chromium for Playwright is preinstalled at `/opt/pw-browsers`.
+
+## Deploying
+
+- `.github/workflows/staff-ops.yml` checks every pull request that touches `staff-ops/` and, on
+  push to `main`, deploys the website and `firestore.rules` to Firebase.
+- Deploying needs repository secrets `STAFF_OPS_ENV` (contents of `.env.local`) and
+  `FIREBASE_SERVICE_ACCOUNT` (service account JSON key with the Firebase Admin role). Without them
+  the deploy job skips itself. Setup steps are in `staff-ops/README.md`.
+- Manual fallback from the owner's computer: `bun run deploy` (or `npm run deploy`).
