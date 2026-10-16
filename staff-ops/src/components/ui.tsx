@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import { WEEKDAY_LABELS } from '../utils/dates';
 
@@ -171,6 +171,70 @@ export const WeekdayPicker: React.FC<{
     })}
   </div>
 );
+
+const NEW_CHOICE = '__new__';
+
+/**
+ * A dropdown that always lists every choice (a datalist hides the ones that
+ * don't match what is already typed), keeps an unlisted current value, and has
+ * a last option that switches to a text box for typing a new one.
+ */
+export const ChoiceSelect: React.FC<{
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+  placeholder: string;
+  newLabel: string;
+}> = ({ value, options, onChange, placeholder, newLabel }) => {
+  const [typing, setTyping] = useState(false);
+  const [before, setBefore] = useState('');
+
+  if (typing) {
+    return (
+      <div>
+        <div className="flex gap-2">
+          <input className={inputClass} value={value} onChange={(e) => onChange(e.target.value)} placeholder="輸入新名稱" autoFocus />
+          <button
+            type="button"
+            onClick={() => {
+              onChange(before);
+              setTyping(false);
+            }}
+            className={`${secondaryButtonClass} shrink-0`}
+          >
+            取消
+          </button>
+        </div>
+        <p className="text-[11px] text-slate-400 font-medium mt-1">儲存之後，下次就可以喺選單度揀。</p>
+      </div>
+    );
+  }
+
+  const choices = value && !options.includes(value) ? [...options, value] : options;
+  return (
+    <select
+      className={inputClass}
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === NEW_CHOICE) {
+          setBefore(value);
+          onChange('');
+          setTyping(true);
+        } else {
+          onChange(e.target.value);
+        }
+      }}
+    >
+      <option value="">{placeholder}</option>
+      {choices.map((choice) => (
+        <option key={choice} value={choice}>
+          {choice}
+        </option>
+      ))}
+      <option value={NEW_CHOICE}>{newLabel}</option>
+    </select>
+  );
+};
 
 /** Prints the current `.print-area`, temporarily switching the page orientation. */
 export const printPage = (orientation: 'portrait' | 'landscape' = 'portrait') => {

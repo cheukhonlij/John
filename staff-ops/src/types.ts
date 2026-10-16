@@ -143,4 +143,6 @@ export interface StockMovement {
 export interface AppSettings {
   companyName: string;
   managerPin: string;
+  /** Positions offered in the staff and workflow forms; unset until a manager edits the list. */
+  positions?: string[];
 }

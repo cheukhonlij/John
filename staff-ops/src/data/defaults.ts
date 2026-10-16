@@ -17,6 +17,9 @@ import { addDays, startOfWeek, todayISO } from '../utils/dates';
 
 export const STAFF_POSITIONS = ['廚房主管', '生產', '包裝', '倉務及送貨', '行政'];
 
+/** The position list managers keep in Settings, or the starter list until they change it. */
+export const positionsOf = (settings: AppSettings) => settings.positions ?? STAFF_POSITIONS;
+
 export const WORKFLOW_AREAS = ['開工準備', '生產', '包裝', '倉務', '出貨', '清潔', '行政'];
 
 export const SOP_CATEGORIES = ['食物安全', '生產', '倉務', '出貨', '清潔', '行政'];

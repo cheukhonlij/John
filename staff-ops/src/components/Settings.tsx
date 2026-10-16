@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Calculator, Check, Download, Eraser, RotateCcw, Upload } from 'lucide-react';
+import { Calculator, Check, Download, Eraser, Plus, RotateCcw, Upload, X } from 'lucide-react';
 import { AppSettings, Employee } from '../types';
+import { positionsOf } from '../data/defaults';
 import { downloadBackupFile, exportBackup, importBackup } from '../utils/storage';
 import { exportCloudBackup, importBackupToCloud, recomputeStockLevels } from '../lib/cloud';
 import { AccountsPanel } from './AccountsPanel';
@@ -28,7 +29,7 @@ export const LocalSettings: React.FC<SettingsProps> = ({ settings, onSaveSetting
       if (!/^\d{4,8}$/.test(newPin)) return setError('密碼要係 4 至 8 位數字');
       if (newPin !== confirmPin) return setError('兩次輸入嘅密碼唔一樣');
     }
-    onSaveSettings({ companyName: companyName.trim() || settings.companyName, managerPin: newPin || settings.managerPin });
+    onSaveSettings({ ...settings, companyName: companyName.trim() || settings.companyName, managerPin: newPin || settings.managerPin });
     setNewPin('');
     setConfirmPin('');
     setMessage(newPin ? '已儲存，主管密碼已更新。' : '已儲存。');
@@ -86,6 +87,8 @@ export const LocalSettings: React.FC<SettingsProps> = ({ settings, onSaveSetting
         </Panel>
       </form>
 
+      <PositionsPanel settings={settings} onSaveSettings={onSaveSettings} />
+
       <Panel title="備份及還原">
         <div className="p-5 space-y-3">
           <p className="text-xs text-slate-600 font-medium">
@@ -129,6 +132,69 @@ export const LocalSettings: React.FC<SettingsProps> = ({ settings, onSaveSetting
         </div>
       </Panel>
     </div>
+  );
+};
+
+/** The position list offered when adding staff and workflow items. */
+const PositionsPanel: React.FC<{
+  settings: AppSettings;
+  onSaveSettings: (settings: AppSettings) => void;
+}> = ({ settings, onSaveSettings }) => {
+  const positions = positionsOf(settings);
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+
+  const save = (next: string[]) => onSaveSettings({ ...settings, positions: next });
+
+  const handleAdd = (e: React.FormEvent) => {
+    e.preventDefault();
+    const position = name.trim();
+    if (!position) return;
+    if (positions.includes(position)) return setError(`「${position}」已經喺清單入面。`);
+    save([...positions, position]);
+    setName('');
+  };
+
+  return (
+    <Panel title="職位">
+      <div className="p-5 space-y-3">
+        <p className="text-xs text-slate-600 font-medium">
+          新增員工同每日流程揀「職位」時，會見到呢個清單。刪除只會喺清單度移走，已經用緊嗰個職位嘅員工同流程唔受影響。
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {positions.map((position) => (
+            <span key={position} className="flex items-center gap-1 pl-3 pr-1 py-1 bg-slate-50 border border-slate-200 text-sm font-bold">
+              {position}
+              <button
+                type="button"
+                onClick={() => save(positions.filter((p) => p !== position))}
+                title={`刪除「${position}」`}
+                className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </span>
+          ))}
+          {positions.length === 0 && <p className="text-xs text-slate-400 font-medium">未有職位，喺下面加。</p>}
+        </div>
+        <form onSubmit={handleAdd} className="flex gap-2">
+          <input
+            className={inputClass}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              setError('');
+            }}
+            placeholder="新職位，例如：司機"
+          />
+          <button type="submit" className={`${primaryButtonClass} shrink-0`}>
+            <Plus className="w-4 h-4" />
+            加入
+          </button>
+        </form>
+        {error && <p className="text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 p-2.5">{error}</p>}
+      </div>
+    </Panel>
   );
 };
 
@@ -201,6 +267,8 @@ export const CloudSettings: React.FC<CloudSettingsProps> = ({ settings, employee
           </button>
         </form>
       </Panel>
+
+      <PositionsPanel settings={settings} onSaveSettings={onSaveSettings} />
 
       <AccountsPanel employees={employees} currentUid={currentUid} />
 

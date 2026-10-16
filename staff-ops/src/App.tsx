@@ -10,6 +10,7 @@ import {
   DEFAULT_SOPS,
   DEFAULT_STOCK_ITEMS,
   DEFAULT_WORKFLOW_TASKS,
+  positionsOf,
 } from './data/defaults';
 import { AppData, useCloudAppData, useLocalAppData } from './data/store';
 import { useStoredState } from './hooks/useStoredState';
@@ -239,6 +240,8 @@ const Shell: React.FC<{
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [inventoryTab, setInventoryTab] = useState<InventoryTab>('stock');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const positions = positionsOf(data.settings);
+  const savePositions = (next: string[]) => data.saveSettings({ ...data.settings, positions: next });
 
   const currentUser = data.employees.find((e) => e.id === currentUserId);
   const pendingLeaveCount = data.leaves.filter((l) => l.status === 'pending').length;
@@ -340,9 +343,11 @@ const Shell: React.FC<{
                 sops={data.sops}
                 employees={data.employees}
                 shifts={data.shifts}
+                positions={positions}
                 isManager={isManager}
                 currentUserId={currentUserId}
                 onSaveTasks={data.saveTasks}
+                onSavePositions={savePositions}
                 onSaveChecks={data.saveChecks}
                 onNeedHistory={data.history?.ensureChecksFrom}
               />
@@ -378,8 +383,10 @@ const Shell: React.FC<{
                 employees={data.employees}
                 leaves={data.leaves}
                 shifts={data.shifts}
+                positions={positions}
                 isManager={isManager}
                 onSaveEmployees={data.saveEmployees}
+                onSavePositions={savePositions}
               />
             )}
             {tab === 'settings' && isManager && settingsPage}

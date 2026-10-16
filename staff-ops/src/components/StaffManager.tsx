@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { AlertCircle, Check, Plus, Search, Trash2 } from 'lucide-react';
 import { Employee, EmploymentType, LeaveRecord, RosterShift } from '../types';
-import { STAFF_COLORS, STAFF_POSITIONS } from '../data/defaults';
+import { STAFF_COLORS } from '../data/defaults';
 import { WEEKDAY_LABELS, formatNumber, startOfWeek, todayISO } from '../utils/dates';
 import { annualLeaveSummary, completedMonths, continuousContractCheck } from '../utils/leave';
 import {
+  ChoiceSelect,
   EmptyState,
   Field,
   Modal,
@@ -22,8 +23,10 @@ interface StaffManagerProps {
   employees: Employee[];
   leaves: LeaveRecord[];
   shifts: RosterShift[];
+  positions: string[];
   isManager: boolean;
   onSaveEmployees: (employees: Employee[]) => void;
+  onSavePositions: (positions: string[]) => void;
 }
 
 type StaffFilter = 'active' | 'full_time' | 'part_time' | 'inactive';
@@ -31,7 +34,7 @@ type StaffFilter = 'active' | 'full_time' | 'part_time' | 'inactive';
 const emptyForm = (): Employee => ({
   id: '',
   name: '',
-  position: STAFF_POSITIONS[0],
+  position: '',
   employmentType: 'full_time',
   phone: '',
   joinDate: todayISO(),
@@ -52,8 +55,10 @@ export const StaffManager: React.FC<StaffManagerProps> = ({
   employees,
   leaves,
   shifts,
+  positions,
   isManager,
   onSaveEmployees,
+  onSavePositions,
 }) => {
   const today = todayISO();
   const [filter, setFilter] = useState<StaffFilter>('active');
@@ -103,6 +108,11 @@ export const StaffManager: React.FC<StaffManagerProps> = ({
       phone: form.phone?.trim(),
       notes: form.notes?.trim(),
     };
+    // A position typed in with 新增職位 joins the list for next time.
+    const before = employees.find((emp) => emp.id === cleaned.id)?.position;
+    if (cleaned.position && cleaned.position !== before && !positions.includes(cleaned.position)) {
+      onSavePositions([...positions, cleaned.position]);
+    }
     if (cleaned.id) {
       onSaveEmployees(employees.map((emp) => (emp.id === cleaned.id ? cleaned : emp)));
     } else {
@@ -277,17 +287,13 @@ export const StaffManager: React.FC<StaffManagerProps> = ({
                 <input className={inputClass} value={form.name} onChange={(e) => setField('name', e.target.value)} autoFocus />
               </Field>
               <Field label="職位">
-                <input
-                  className={inputClass}
-                  list="staff-positions"
+                <ChoiceSelect
                   value={form.position}
-                  onChange={(e) => setField('position', e.target.value)}
+                  options={positions}
+                  onChange={(position) => setField('position', position)}
+                  placeholder="揀職位…"
+                  newLabel="＋ 新增職位…"
                 />
-                <datalist id="staff-positions">
-                  {STAFF_POSITIONS.map((p) => (
-                    <option key={p} value={p} />
-                  ))}
-                </datalist>
               </Field>
               <Field label="僱用類別" required>
                 <div className="grid grid-cols-2 gap-2">
