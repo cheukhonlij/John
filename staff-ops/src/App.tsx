@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { KeyRound, Lock, LogOut, Menu, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { KeyRound, Lock, LogOut, Menu, Receipt, X } from 'lucide-react';
 import {
   DEFAULT_EMPLOYEES,
   DEFAULT_HOLIDAYS,
@@ -14,7 +14,7 @@ import {
 import { AppData, useCloudAppData, useLocalAppData } from './data/store';
 import { useStoredState } from './hooks/useStoredState';
 import { cloudEnabled } from './lib/firebase';
-import { UserProfile, signOutUser, useAuthSession } from './lib/cloud';
+import { UserProfile, getOwnerUid, signOutUser, useAuthSession } from './lib/cloud';
 import { Dashboard, NavTab } from './components/Dashboard';
 import { RosterPlanner } from './components/RosterPlanner';
 import { DailyWorkflow } from './components/DailyWorkflow';
@@ -54,8 +54,28 @@ const CloudApp: React.FC = () => {
 const CloudSession: React.FC<{ profile: UserProfile }> = ({ profile }) => {
   const data = useCloudAppData();
   const [changingPassword, setChangingPassword] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
   const isManager = profile.role === 'manager';
   const me = data.employees.find((e) => e.id === profile.employeeId);
+
+  // 開單台 is for the owner only (the account that did first-time setup).
+  useEffect(() => {
+    let alive = true;
+    if (!isManager) {
+      setIsOwner(false);
+      return;
+    }
+    getOwnerUid()
+      .then((uid) => {
+        if (alive) setIsOwner(uid === profile.uid);
+      })
+      .catch(() => {
+        if (alive) setIsOwner(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [isManager, profile.uid]);
 
   const controls = (compact: boolean) => (
     <>
@@ -81,6 +101,7 @@ const CloudSession: React.FC<{ profile: UserProfile }> = ({ profile }) => {
       <Shell
         data={data}
         isManager={isManager}
+        isOwner={isOwner}
         currentUserId={profile.employeeId}
         headerControls={controls(false)}
         mobileControls={<div className="flex flex-wrap items-center gap-2">{controls(true)}</div>}
@@ -209,11 +230,12 @@ const LocalApp: React.FC = () => {
 const Shell: React.FC<{
   data: AppData;
   isManager: boolean;
+  isOwner?: boolean;
   currentUserId: string;
   headerControls: React.ReactNode;
   mobileControls: React.ReactNode;
   settingsPage: React.ReactNode;
-}> = ({ data, isManager, currentUserId, headerControls, mobileControls, settingsPage }) => {
+}> = ({ data, isManager, isOwner = false, currentUserId, headerControls, mobileControls, settingsPage }) => {
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [inventoryTab, setInventoryTab] = useState<InventoryTab>('stock');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -266,6 +288,17 @@ const Shell: React.FC<{
               )}
             </button>
           ))}
+          {isOwner && (
+            <a
+              href="/invoice"
+              title="只有你睇到呢個分頁"
+              className="ml-auto px-3.5 py-3 text-sm font-black whitespace-nowrap border-b-[3px] border-transparent text-slate-400 hover:text-slate-900 flex items-center gap-1.5"
+            >
+              <Receipt className="w-4 h-4" />
+              開單台
+              <Lock className="w-3 h-3" />
+            </a>
+          )}
         </nav>
       </header>
 

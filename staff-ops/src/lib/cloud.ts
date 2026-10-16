@@ -387,6 +387,16 @@ export const isSetupDone = async () =>
   (await getDoc(doc(getFirebase().db, COLLECTIONS.config, 'bootstrap'))).exists();
 
 /**
+ * The owner is the account that did first-time setup. Only the owner sees the
+ * invoice page (開單台); firestore.rules (isOwner) is what actually enforces it.
+ */
+export const getOwnerUid = async (): Promise<string | null> => {
+  const snap = await getDoc(doc(getFirebase().db, COLLECTIONS.config, 'bootstrap'));
+  const by: unknown = snap.exists() ? snap.data().by : null;
+  return typeof by === 'string' ? by : null;
+};
+
+/**
  * First-time setup: creates the owner's login and claims the manager role.
  * Security rules allow this exactly once (while config/bootstrap is absent).
  */
