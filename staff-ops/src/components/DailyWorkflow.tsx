@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { BookOpen, Check, ChevronLeft, ChevronRight, ListChecks, Pencil, Plus, Printer, Trash2 } from 'lucide-react';
 import { Employee, RosterShift, SOP, WorkflowCheck, WorkflowTask } from '../types';
-import { STAFF_COLORS, STAFF_POSITIONS, WORKFLOW_AREAS } from '../data/defaults';
+import { STAFF_COLORS, WORKFLOW_AREAS } from '../data/defaults';
 import { WEEKDAY_LABELS, addDays, formatFullDateZh, todayISO, weekdayOf } from '../utils/dates';
 import { SOPViewer } from './SOPLibrary';
 import {
+  ChoiceSelect,
   EmptyState,
   Field,
   Modal,
@@ -24,15 +25,20 @@ interface DailyWorkflowProps {
   sops: SOP[];
   employees: Employee[];
   shifts: RosterShift[];
+  positions: string[];
   isManager: boolean;
   currentUserId: string;
   onSaveTasks: (tasks: WorkflowTask[]) => void;
+  onSavePositions: (positions: string[]) => void;
   onSaveChecks: (checks: WorkflowCheck[]) => void;
   /** Asks for ticks from this date to be loaded (cloud mode keeps a window). */
   onNeedHistory?: (from: string) => void;
 }
 
 export const checkId = (date: string, taskId: string) => `${date}_${taskId}`;
+
+/** 負責崗位 for tasks the whole team shares; not a position of its own. */
+const ALL_STAFF = '全體';
 
 export const tasksForDate = (tasks: WorkflowTask[], date: string) =>
   tasks
@@ -50,9 +56,11 @@ export const DailyWorkflow: React.FC<DailyWorkflowProps> = ({
   sops,
   employees,
   shifts,
+  positions,
   isManager,
   currentUserId,
   onSaveTasks,
+  onSavePositions,
   onSaveChecks,
   onNeedHistory,
 }) => {
@@ -91,6 +99,12 @@ export const DailyWorkflow: React.FC<DailyWorkflowProps> = ({
   };
 
   const saveTask = (task: WorkflowTask) => {
+    // A role typed in with 新增職位 joins the position list for next time.
+    const role = task.ownerRole;
+    const before = tasks.find((t) => t.id === task.id)?.ownerRole;
+    if (role && role !== ALL_STAFF && role !== before && !positions.includes(role)) {
+      onSavePositions([...positions, role]);
+    }
     onSaveTasks(task.id && tasks.some((t) => t.id === task.id) ? tasks.map((t) => (t.id === task.id ? task : t)) : [...tasks, { ...task, id: newId('wf') }]);
     setEditingTask(null);
   };
@@ -309,7 +323,7 @@ export const DailyWorkflow: React.FC<DailyWorkflowProps> = ({
       )}
 
       {editingTask && (
-        <TaskForm task={editingTask} sops={sops} onClose={() => setEditingTask(null)} onSave={saveTask} />
+        <TaskForm task={editingTask} sops={sops} positions={positions} onClose={() => setEditingTask(null)} onSave={saveTask} />
       )}
       {viewingSop && <SOPViewer sop={viewingSop} onClose={() => setViewingSop(null)} />}
     </div>
@@ -319,9 +333,10 @@ export const DailyWorkflow: React.FC<DailyWorkflowProps> = ({
 const TaskForm: React.FC<{
   task: WorkflowTask;
   sops: SOP[];
+  positions: string[];
   onClose: () => void;
   onSave: (task: WorkflowTask) => void;
-}> = ({ task, sops, onClose, onSave }) => {
+}> = ({ task, sops, positions, onClose, onSave }) => {
   const [form, setForm] = useState<WorkflowTask>(task);
   const set = (patch: Partial<WorkflowTask>) => setForm({ ...form, ...patch });
 
@@ -331,7 +346,7 @@ const TaskForm: React.FC<{
         onSubmit={(e) => {
           e.preventDefault();
           if (!form.title.trim() || form.weekdays.length === 0) return;
-          onSave({ ...form, title: form.title.trim(), sopId: form.sopId || undefined });
+          onSave({ ...form, title: form.title.trim(), ownerRole: form.ownerRole?.trim(), sopId: form.sopId || undefined });
         }}
         className="space-y-4"
       >
@@ -353,12 +368,13 @@ const TaskForm: React.FC<{
             </datalist>
           </Field>
           <Field label="負責崗位">
-            <input className={inputClass} list="wf-roles" value={form.ownerRole || ''} onChange={(e) => set({ ownerRole: e.target.value })} />
-            <datalist id="wf-roles">
-              {['全體', ...STAFF_POSITIONS].map((r) => (
-                <option key={r} value={r} />
-              ))}
-            </datalist>
+            <ChoiceSelect
+              value={form.ownerRole || ''}
+              options={[ALL_STAFF, ...positions.filter((p) => p !== ALL_STAFF)]}
+              onChange={(ownerRole) => set({ ownerRole })}
+              placeholder="（唔指定）"
+              newLabel="＋ 新增職位…"
+            />
           </Field>
         </div>
         <Field label="邊幾日要做" required>
