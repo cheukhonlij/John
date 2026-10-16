@@ -12,13 +12,26 @@ Chinese characters, in plain words, and explain what he has to click or run step
 
 | Folder | App | Users | Hosting |
 | --- | --- | --- | --- |
-| repo root (`src/`, `index.html`) | B2B invoice system: customers, product prices, invoices, PDFs | Owner only | Google AI Studio / Cloud Run |
+| repo root (`src/`, `index.html`) | Older B2B invoice generator (Google AI Studio) | Owner only | Google AI Studio / Cloud Run |
 | `staff-ops/` | Staff operations: roster, leave, daily workflow, SOP, inventory | All staff | Firebase Hosting (`todays-staff-ops`) |
+| `staff-ops/invoice.html` + `staff-ops/src/invoice/` | 開單台 invoice system: customers, customer prices, invoices, meal tickets, PDFs | **Owner only** | Same Firebase site, at `/invoice` |
 
-- Staff must never see customer prices, product prices or salaries. Nothing from the invoice
-  app may be imported into `staff-ops/`, and `staff-ops/` stores no pay data.
-- Each app has its own `package.json`, lockfile and build. The root `tsconfig.json` excludes
-  `staff-ops/`. Work on one app does not touch the other unless asked.
+- Staff, and managers other than the owner, must never see customer prices, product prices or
+  salaries. At John's request (Oct 2026) the 開單台 invoice system lives inside `staff-ops/` as a
+  separate page, locked to the owner: the account that did first-time setup
+  (`config/bootstrap.by`) while it is still a manager. `firestore.rules` `isOwner()` guards every
+  `inv*` collection; `tests/rules.test.mjs` checks that a second manager, staff and strangers are
+  denied. The 開單台 tab in the staff app is only a link and is shown to the owner only.
+- Invoice data (customers, prices, invoices, company bank details) lives only in Firestore. Never
+  put it in `src/`, `invoice.html`, tests or commits: the page code is public. Load data with
+  開單台 → ⚙ 設定 → 匯入開單台備份 (JSON exported by the 開單台 local or Claude version; adds or
+  overwrites by id, never deletes).
+- `src/invoice/*.js` is plain JavaScript on purpose (ported from the standalone 開單台): it is not
+  in the TypeScript check. Invoice numbers are `YYYY` + `DD` + `MM` + 3-digit daily sequence
+  (John's existing format), issued by a Firestore transaction on `invCounters/{YYYYDDMM}`.
+- The root app keeps its own `package.json`, lockfile and build; the root `tsconfig.json` excludes
+  `staff-ops/`. Nothing from the root app is imported into `staff-ops/`, and `staff-ops/` stores no
+  pay data.
 
 ## Confidential content — never commit it
 
@@ -52,8 +65,9 @@ React 19 + TypeScript (strict) + Vite 6 + Tailwind CSS 4 + lucide-react, managed
   movement (`stockLevelOps`); Settings → 重新計算存貨 rebuilds them from all movements.
 - `firestore.rules` is the real permission check. Staff read everything and may create workflow
   ticks, stock movements and pending leave; managers do everything else. The first account
-  becomes manager exactly once via `config/bootstrap`. Any new collection needs a rules block
-  and a case in `tests/rules.test.mjs`.
+  becomes manager exactly once via `config/bootstrap`; that account is also the owner who alone
+  can use 開單台 (`inv*` collections). Any new collection needs a rules block and a case in
+  `tests/rules.test.mjs`.
 - Production data already exists in Firestore. Schema changes must stay compatible with existing
   documents (add optional fields; never rename or repurpose fields without a migration).
 - Leave and labour-law logic is in `src/utils/leave.ts` (HK Employment Ordinance: annual leave

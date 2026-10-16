@@ -122,6 +122,44 @@ await expect('staff cannot approve existing leave', false, () =>
 await expect('staff cannot delete approved leave', false, () => deleteDoc(doc(staff.db, 'leaves', 'l-approved')));
 await expect('staff cancels pending leave', true, () => deleteDoc(doc(staff.db, 'leaves', 'l-pending')));
 
+// ---- Invoice system (開單台): owner only ----
+await expect('owner writes an invoice', true, () =>
+  setDoc(doc(manager.db, 'invInvoices', 'inv1'), { no: '20261610001', lines: [{ name: 'x', qty: 1, price: 10 }] })
+);
+await expect('owner writes a customer with prices', true, () =>
+  setDoc(doc(manager.db, 'invCustomers', 'c1'), { name: 'Shop', prices: { p1: 9 } })
+);
+await expect('owner writes items, tickets, settings and counters', true, async () => {
+  const batch = writeBatch(manager.db);
+  batch.set(doc(manager.db, 'invItems', 'p1'), { name: 'item', price: 22.8 });
+  batch.set(doc(manager.db, 'invTickets', 't1'), { customerId: 'c1', qtyPaid: 45 });
+  batch.set(doc(manager.db, 'invConfig', 'settings'), { brand: 'x' });
+  batch.set(doc(manager.db, 'invCounters', '20261610'), { seq: 1 });
+  await batch.commit();
+});
+await expect('owner reads invoices', true, () => getDocs(collection(manager.db, 'invInvoices')));
+await expect('owner reads customers', true, () => getDoc(doc(manager.db, 'invCustomers', 'c1')));
+
+const manager2 = client('manager2');
+const m2 = await createUserWithEmailAndPassword(manager2.auth, email('supervisor'), 'secret123');
+await expect('owner creates a second manager', true, () =>
+  setDoc(doc(manager.db, 'users', m2.user.uid), profile(m2.user.uid, 'supervisor', 'manager'))
+);
+await expect('second manager still runs staff ops', true, () => setDoc(doc(manager2.db, 'shifts', 's9'), { id: 's9' }));
+await expect('second manager cannot read invoices', false, () => getDocs(collection(manager2.db, 'invInvoices')));
+await expect('second manager cannot read one invoice', false, () => getDoc(doc(manager2.db, 'invInvoices', 'inv1')));
+await expect('second manager cannot read customers', false, () => getDocs(collection(manager2.db, 'invCustomers')));
+await expect('second manager cannot read items', false, () => getDocs(collection(manager2.db, 'invItems')));
+await expect('second manager cannot write invoices', false, () => setDoc(doc(manager2.db, 'invInvoices', 'x'), { no: 'x' }));
+await expect('second manager cannot change counters', false, () => setDoc(doc(manager2.db, 'invCounters', '20261610'), { seq: 99 }));
+await expect('second manager cannot take over setup', false, () => setDoc(doc(manager2.db, 'config', 'bootstrap'), { by: m2.user.uid }));
+await expect('staff cannot read invoices', false, () => getDocs(collection(staff.db, 'invInvoices')));
+await expect('staff cannot read customers', false, () => getDoc(doc(staff.db, 'invCustomers', 'c1')));
+await expect('staff cannot read invoice settings', false, () => getDoc(doc(staff.db, 'invConfig', 'settings')));
+await expect('staff cannot write tickets', false, () => setDoc(doc(staff.db, 'invTickets', 't2'), { qtyPaid: 1 }));
+await expect('stranger cannot read invoices', false, () => getDocs(collection(stranger.db, 'invInvoices')));
+await expect('account without a profile cannot read invoices', false, () => getDocs(collection(rogue.db, 'invInvoices')));
+
 await expect('manager disables the staff account', true, () => updateDoc(doc(manager.db, 'users', s.user.uid), { role: 'disabled' }));
 await expect('disabled account cannot read', false, () => getDocs(collection(staff.db, 'employees')));
 

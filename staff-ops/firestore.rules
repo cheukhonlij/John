@@ -4,6 +4,10 @@ rules_version = '2';
 //   staff   – read everything; tick workflow items, record stock movements,
 //             submit (and cancel their own pending) leave requests
 //   manager – everything, including roster, approvals, SOPs and accounts
+//   owner   – the account that did first-time setup (config/bootstrap.by),
+//             while it is still a manager. Only the owner can read or write the
+//             invoice system (inv* collections): customers, prices, invoices.
+//             Other managers and staff never see it.
 // Signing up alone grants nothing: a users/{uid} profile, written by a
 // manager, is what gives an account access.
 service cloud.firestore {
@@ -25,6 +29,11 @@ service cloud.firestore {
     }
     function bootstrapPath() {
       return /databases/$(database)/documents/config/bootstrap;
+    }
+    function isOwner() {
+      return isManager()
+        && exists(bootstrapPath())
+        && get(bootstrapPath()).data.by == request.auth.uid;
     }
 
     // One-time setup: the very first account may make itself manager, in the
@@ -100,6 +109,27 @@ service cloud.firestore {
       allow update: if isManager();
       allow delete: if isManager()
         || (isStaff() && resource.data.status == 'pending');
+    }
+
+    // Invoice system (開單台): owner only. Customer details, selling prices,
+    // invoices, prepaid meal tickets, invoice-number counters and invoice settings.
+    match /invCustomers/{id} {
+      allow read, write: if isOwner();
+    }
+    match /invItems/{id} {
+      allow read, write: if isOwner();
+    }
+    match /invInvoices/{id} {
+      allow read, write: if isOwner();
+    }
+    match /invTickets/{id} {
+      allow read, write: if isOwner();
+    }
+    match /invCounters/{id} {
+      allow read, write: if isOwner();
+    }
+    match /invConfig/{id} {
+      allow read, write: if isOwner();
     }
   }
 }
