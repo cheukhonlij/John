@@ -111,6 +111,24 @@ service cloud.firestore {
         || (isStaff() && resource.data.status == 'pending');
     }
 
+    // Delivery notes: managers write them; whoever delivers records the
+    // customer's signature once, without touching what was sent. Customer
+    // names and addresses only — prices stay in the inv* collections below.
+    match /deliveryCustomers/{id} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /deliveryNotes/{id} {
+      allow read: if isStaff();
+      allow create, delete: if isManager();
+      allow update: if isManager()
+        || (isStaff()
+          && resource.data.status == 'pending'
+          && request.resource.data.status == 'signed'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'signedAt', 'signedBy', 'receiverName', 'signature', 'receivedQty', 'receivedNotes']));
+    }
+
     // Invoice system (開單台): owner only. Customer details, selling prices,
     // invoices, prepaid meal tickets, invoice-number counters and invoice settings.
     match /invCustomers/{id} {

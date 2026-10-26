@@ -1,5 +1,7 @@
 import {
   AppSettings,
+  DeliveryCustomer,
+  DeliveryNote,
   Employee,
   Holiday,
   LeaveRecord,
@@ -357,4 +359,30 @@ export const DEFAULT_MOVEMENTS: StockMovement[] = [
   sampleMovement('mv16', -4, 'out', 'p8', -65, { partner: '台沐' }),
   sampleMovement('mv17', -3, 'waste', 'p30', -4, { note: '包裝漏氣' }),
   sampleMovement('mv18', -1, 'count', 'p3', -2, { countedQty: 198, note: '每週盤點' }),
+];
+
+// Delivery notes. Real customers are copied over from 開單台; these are samples.
+export const DEFAULT_DELIVERY_CUSTOMERS: DeliveryCustomer[] = [
+  { id: 'dc1', name: '示範餐廳（觀塘）', contact: '陳經理', phone: '2345 6789', address: '九龍觀塘示範道 1 號地舖' },
+  { id: 'dc2', name: '示範咖啡店（中環）', contact: '李小姐', phone: '2876 5432', address: '香港中環示範街 8 號 2 樓' },
+];
+
+export const DEFAULT_DELIVERY_NOTES: DeliveryNote[] = [
+  {
+    id: 'dn1',
+    no: `DN${todayISO().replace(/-/g, '')}-01`,
+    date: todayISO(),
+    customerId: 'dc1',
+    customerName: '示範餐廳（觀塘）',
+    contact: '陳經理',
+    phone: '2345 6789',
+    address: '九龍觀塘示範道 1 號地舖',
+    lines: [
+      { itemId: 'p1', itemName: '招牌原味,即食雞胸', unit: '包', qty: 40 },
+      { itemId: 'p3', itemName: '秘製黑椒,即食雞胸', unit: '包', qty: 20 },
+    ],
+    createdBy: '陳大文',
+    createdAt: `${todayISO()}T08:00:00.000Z`,
+    status: 'pending',
+  },
 ];

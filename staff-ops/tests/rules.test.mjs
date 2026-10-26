@@ -160,6 +160,39 @@ await expect('staff cannot write tickets', false, () => setDoc(doc(staff.db, 'in
 await expect('stranger cannot read invoices', false, () => getDocs(collection(stranger.db, 'invInvoices')));
 await expect('account without a profile cannot read invoices', false, () => getDocs(collection(rogue.db, 'invInvoices')));
 
+// ---- Delivery notes: managers write, staff record the customer's signature once ----
+const dn = {
+  id: 'dn1', no: 'DN20261026-01', date: '2026-10-26', customerId: 'c1', customerName: 'Shop',
+  lines: [{ itemId: 'p1', itemName: 'item', unit: 'pack', qty: 10 }], createdAt: 'test', status: 'pending',
+};
+const signing = { status: 'signed', signedAt: 'test', signedBy: 'meiling', receiverName: 'Mr Chan', signature: 'data:image/png;base64,x', receivedQty: [10] };
+await expect('manager adds a delivery customer', true, () =>
+  setDoc(doc(manager.db, 'deliveryCustomers', 'c1'), { id: 'c1', name: 'Shop', address: '1 Road' })
+);
+await expect('staff reads delivery customers', true, () => getDocs(collection(staff.db, 'deliveryCustomers')));
+await expect('staff cannot edit delivery customers', false, () =>
+  setDoc(doc(staff.db, 'deliveryCustomers', 'c2'), { id: 'c2', name: 'x' })
+);
+await expect('manager creates a delivery note', true, () => setDoc(doc(manager.db, 'deliveryNotes', 'dn1'), dn));
+await expect('staff cannot create a delivery note', false, () =>
+  setDoc(doc(staff.db, 'deliveryNotes', 'dn2'), { ...dn, id: 'dn2' })
+);
+await expect('staff cannot change what was sent', false, () =>
+  updateDoc(doc(staff.db, 'deliveryNotes', 'dn1'), { ...signing, lines: [{ itemId: 'p1', itemName: 'item', unit: 'pack', qty: 1 }] })
+);
+await expect('staff cannot mark it invoiced', false, () =>
+  updateDoc(doc(staff.db, 'deliveryNotes', 'dn1'), { ...signing, invoiceNo: 'x' })
+);
+await expect('staff records the signature', true, () => updateDoc(doc(staff.db, 'deliveryNotes', 'dn1'), signing));
+await expect('staff cannot sign it again', false, () =>
+  updateDoc(doc(staff.db, 'deliveryNotes', 'dn1'), { ...signing, receiverName: 'Someone else' })
+);
+await expect('staff cannot delete a delivery note', false, () => deleteDoc(doc(staff.db, 'deliveryNotes', 'dn1')));
+await expect('manager marks it invoiced', true, () =>
+  updateDoc(doc(manager.db, 'deliveryNotes', 'dn1'), { invoiceId: 'inv1', invoiceNo: '20261610001' })
+);
+await expect('stranger cannot read delivery notes', false, () => getDocs(collection(stranger.db, 'deliveryNotes')));
+
 await expect('manager disables the staff account', true, () => updateDoc(doc(manager.db, 'users', s.user.uid), { role: 'disabled' }));
 await expect('disabled account cannot read', false, () => getDocs(collection(staff.db, 'employees')));
 

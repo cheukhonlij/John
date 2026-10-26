@@ -70,6 +70,14 @@ React 19 + TypeScript (strict) + Vite 6 + Tailwind CSS 4 + lucide-react, managed
   `tests/rules.test.mjs`.
 - Production data already exists in Firestore. Schema changes must stay compatible with existing
   documents (add optional fields; never rename or repurpose fields without a migration).
+- Delivery notes (送貨單, `src/components/DeliveryNotes.tsx`): `deliveryCustomers` holds name, contact,
+  phone and address only, copied from 開單台 `invCustomers` under the same id when the owner saves a
+  customer (and re-synced each time 開單台 opens); managers can also add them. `deliveryNotes` are
+  created by managers; staff may only sign a pending note once (rules limit the changed keys).
+  Signing writes `out` movements with ids `mv_<noteId>_<line>`. 開單台 → 匯入送貨單 sums a month's
+  signed notes per stock item into invoice lines (invItems map to stock items by `stockItemId`, else by
+  name) and sets `invoiceId`/`invoiceNo` on the notes; deleting the invoice clears them. Cloud mode keeps
+  notes from the last 62 days plus all pending ones live.
 - Leave and labour-law logic is in `src/utils/leave.ts` (HK Employment Ordinance: annual leave
   7→14 days by service year, sick-day accrual capped at 120, continuous contract = 68 hours in
   4 weeks from 18 Jan 2026). Statutory holidays are listed for 2026–2027 in `defaults.ts`;

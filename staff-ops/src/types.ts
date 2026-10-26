@@ -140,6 +140,53 @@ export interface StockMovement {
   createdAt: string;
 }
 
+// ===== Delivery notes =====
+// Names, addresses and quantities only — prices stay in 開單台 (invCustomers, invItems).
+
+export interface DeliveryCustomer {
+  id: string; // same id as the 開單台 customer it is copied from
+  name: string;
+  company?: string;
+  contact?: string;
+  phone?: string;
+  address?: string;
+}
+
+export interface DeliveryLine {
+  itemId: string;
+  itemName: string;
+  unit: string;
+  qty: number;
+}
+
+export type DeliveryStatus = 'pending' | 'signed';
+
+export interface DeliveryNote {
+  id: string;
+  no: string; // DN + YYYYMMDD + "-" + two-digit sequence, e.g. DN20261026-01
+  date: string; // delivery date
+  customerId: string;
+  customerName: string;
+  contact?: string;
+  phone?: string;
+  address?: string;
+  lines: DeliveryLine[];
+  notes?: string;
+  createdBy?: string;
+  createdAt: string;
+  status: DeliveryStatus;
+  // Filled in when the customer signs.
+  signedAt?: string;
+  signedBy?: string; // our staff member who delivered
+  receiverName?: string;
+  signature?: string; // PNG data URL
+  receivedQty?: number[]; // per line, what the customer actually took
+  receivedNotes?: string;
+  // Filled in by 開單台 when the month's invoice is made.
+  invoiceId?: string;
+  invoiceNo?: string;
+}
+
 export interface AppSettings {
   companyName: string;
   managerPin: string;

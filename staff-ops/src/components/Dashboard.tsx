@@ -9,7 +9,7 @@ import { tasksForDate } from './DailyWorkflow';
 import { InventoryTab } from './Inventory';
 import { Panel, StatCard } from './ui';
 
-export type NavTab = 'dashboard' | 'roster' | 'workflow' | 'inventory' | 'leave' | 'sop' | 'staff' | 'settings';
+export type NavTab = 'dashboard' | 'roster' | 'workflow' | 'inventory' | 'delivery' | 'leave' | 'sop' | 'staff' | 'settings';
 
 interface DashboardProps {
   employees: Employee[];
