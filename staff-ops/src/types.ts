@@ -153,7 +153,8 @@ export interface DeliveryCustomer {
 }
 
 export interface DeliveryLine {
-  itemId: string;
+  itemId: string; // stock item; empty when a 開單台 product has no stock item to deduct
+  productId?: string; // 開單台 product, on notes opened there
   itemName: string;
   unit: string;
   qty: number;

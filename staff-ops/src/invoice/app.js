@@ -5,6 +5,7 @@ import {
   putSettings as cloudPutSettings, nextSequence, importBackup, exportBackup,
   syncDeliveryCustomer, removeDeliveryCustomer, syncAllDeliveryCustomers, loadDeliveryCustomers,
   loadStockItems, loadDeliveryNotesFor, markDeliveryNotes, unmarkDeliveryNotes, flushWrites,
+  subscribeDeliveryNotes, saveDeliveryNote, deleteDeliveryNote,
 } from './store.js';
 
 (function(){
@@ -35,11 +36,13 @@ const state = {
   draft:null, invFilter:{q:"",status:"all",month:"all"}, reportMonth:monthOf(todayISO()),
   picker:null, toast:null, modal:null, gate:"loading", netChecked:false,
   // 員工系統嗰邊：倉存貨品（產品配對用）、送貨客戶、匯入送貨單視窗
-  stockItems:[], deliveryCustomers:[], dnImport:null
+  stockItems:[], deliveryCustomers:[], dnImport:null,
+  // 開單台開送貨單：最近嘅送貨單、正在開／改嗰張、產品表揀完加去邊
+  deliveryNotes:[], dnDraft:null, pickerFor:"invoice"
 };
 
 /* ---------------- persistence：Firestore（只限老闆帳戶） ---------------- */
-let pendingRefresh = false, unsubData = null, gotFirstData = false;
+let pendingRefresh = false, unsubData = null, unsubNotes = null, gotFirstData = false;
 const DEFAULT_SETTINGS = JSON.parse(JSON.stringify(state.settings));
 function setOnline(v){
   dbReady = v; state.netChecked = true;
@@ -98,9 +101,15 @@ function connect(){
   if(!cloudEnabled){ state.gate = "no-cloud"; render(); return; }
   watchOwner(({state: st})=>{
     if(unsubData){ unsubData(); unsubData = null; }
+    if(unsubNotes){ unsubNotes(); unsubNotes = null; }
     gotFirstData = false;
     state.gate = st;
     if(st === "owner"){
+      unsubNotes = subscribeDeliveryNotes(list=>{
+        state.deliveryNotes = list;
+        if(!gotFirstData) return;
+        if(busyEditing()) pendingRefresh = true; else render();
+      }, e=>console.warn(e));
       unsubData = subscribeAll(applyData, (e)=>{
         console.warn(e);
         if(/permission/i.test(String((e && (e.code || e.message)) || ""))){ state.gate = "not-owner"; render(); }
@@ -202,7 +211,7 @@ function render(){
   }
   const scroll = window.scrollY;
   m.innerHTML = ({
-    new:viewNew, invoices:viewInvoices, customers:viewCustomers,
+    new:viewNew, delivery:viewDelivery, invoices:viewInvoices, customers:viewCustomers,
     items:viewItems, tickets:viewTickets, report:viewReport
   }[state.tab] || viewNew)();
   $("#modalhost").innerHTML = (state.modal ? state.modal() : "") + (state.toast ? '<div class="bar-toast">'+esc(state.toast)+'</div>' : "");
@@ -338,7 +347,7 @@ function lineRow(l,i){
   + '</tr>';
 }
 function pickerHTML(){
-  const d = state.draft || {};
+  const d = (state.pickerFor==="delivery" ? state.dnDraft : state.draft) || {};
   const groups = {};
   state.items.forEach(it=>{ const g = it.cat||"其他"; (groups[g]=groups[g]||[]).push(it); });
   const keys = Object.keys(groups).sort();
@@ -758,6 +767,147 @@ function settingsModal(){
     + '</div>',
     '<button class="btn" data-act="modal-close">取消</button><button class="btn pri" data-act="settings-save">儲存</button>', true);
 }
+/* ================= 送貨單（開俾員工送貨，冇價錢） ================= */
+const DN_STATUS = { pending:{t:"待送", c:"due"}, signed:{t:"已簽收", c:"ok"} };
+/* DN + YYYYMMDD + "-" + 兩位流水號，同員工系統一樣 */
+function nextDnNo(date, excludeId){
+  const base = "DN"+date.replace(/-/g,"")+"-";
+  const used = state.deliveryNotes.filter(n=>n.id!==excludeId && String(n.no||"").indexOf(base)===0).map(n=>parseInt(n.no.slice(base.length),10)||0);
+  return base + String((used.length?Math.max.apply(null,used):0)+1).padStart(2,"0");
+}
+/* 簽收後扣倉存要知道係邊樣倉存貨品：產品有配對就用，冇就搵同名嘅 */
+function stockIdFor(productId, name){
+  const it = state.items.find(x=>x.id===productId);
+  if(it && it.stockItemId) return it.stockItemId;
+  const s = state.stockItems.find(x=>x.name===(it ? it.name : name));
+  return s ? s.id : "";
+}
+/* 送貨單 A4：冇價錢；簽收咗就連客人簽名、收貨人同時間 */
+function dnSignedAt(iso){
+  if(!iso) return "";
+  const d = new Date(iso), p2 = n=>String(n).padStart(2,"0");
+  return fmtHK(todayISOOf(d))+" "+p2(d.getHours())+":"+p2(d.getMinutes());
+}
+function todayISOOf(d){ return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); }
+function dnDocHTML(n){
+  const s = state.settings, signed = n.status==="signed";
+  const bizLines = [s.addrEn, s.addrZh, s.phone && ("Tel: "+s.phone), s.web].filter(Boolean);
+  const custLines = [n.address, (n.contact||n.phone) && ("Contact: "+[n.contact, n.phone].filter(Boolean).join(" "))].filter(Boolean);
+  const line = 'height:64px;border-bottom:1px solid #141a1e;display:flex;align-items:flex-end';
+  return '<div class="doc">'
+  + '<div class="dh"><div class="biz"><b>'+esc(s.brand||s.name||"Today\'s Food Lab")+'</b><small>'+bizLines.map(esc).join("<br>").replace(/\n/g,"<br>")+'</small></div>'
+  +   '<div class="dt"><b>Delivery Note</b><span class="no">'+esc(n.no||"—")+'</span>'
+  +     '<small>送貨單<br>DATE　'+esc(fmtHK(n.date))+'</small></div></div>'
+  + '<div class="parties"><div><em>Deliver to 送貨</em><strong>'+esc(n.customerName||"（未揀客戶）")+'</strong>'+(custLines.length?'<p>'+esc(custLines.join("\n"))+'</p>':"")+'</div>'
+  +   '<div style="flex:none;text-align:right">'+(signed?'<span class="stamp p">Received 已簽收</span>':"")+'</div></div>'
+  + '<table><thead><tr><th style="width:26px">#</th><th>DESCRIPTION 貨品</th><th class="r" style="width:70px">QTY 數量</th><th style="width:54px;padding-left:10px">UNIT</th>'
+  +   (signed?'<th class="r" style="width:86px">RECEIVED 實收</th>':"")+'</tr></thead><tbody>'
+  + (n.lines||[]).map((l,k)=>{
+      const got = signed ? dnQty(n,k) : null;
+      return '<tr><td>'+(k+1)+'</td><td>'+esc(l.itemName||"")+'</td><td class="r">'+(Math.round((Number(l.qty)||0)*1000)/1000)+'</td>'
+      + '<td style="padding-left:10px">'+esc(l.unit||"")+'</td>'
+      + (signed?'<td class="r"'+(got!==Number(l.qty)?' style="color:#9c2b21;font-weight:600"':"")+'>'+(Math.round(got*1000)/1000)+'</td>':"")+'</tr>';
+    }).join("")
+  + '</tbody></table>'
+  + '<div class="foot">'
+  +   '<div><em>Received by 收貨人簽名</em><div style="'+line+'">'+(n.signature?'<img src="'+esc(n.signature)+'" alt="" style="max-height:62px;max-width:100%">':"")+'</div>'
+  +     '<p style="margin-top:6px">收貨人：'+esc(n.receiverName||"")+(signed?'<br>簽收時間：'+esc(dnSignedAt(n.signedAt)):"")+'</p></div>'
+  +   '<div><em>Delivered by 送貨人</em><div style="'+line+'"><span style="font-size:12px;padding-bottom:4px">'+esc(n.signedBy||"")+'</span></div></div>'
+  + '</div>'
+  + ((n.notes||n.receivedNotes) ? '<div class="foot"><div><em>Notes 備註</em><p>'+esc([n.notes, n.receivedNotes && ("收貨備註："+n.receivedNotes)].filter(Boolean).join("\n"))+'</p></div></div>' : "")
+  + '<p style="margin:14px 0 0;color:#7b868d;font-size:10px">收貨時請核對貨品同數量。如有短缺或者損壞，請喺簽收前通知送貨人。</p>'
+  + '</div>';
+}
+/* 檔名：TFL Delivery Note DN20261026-01_客戶.pdf */
+function dnFilename(n){
+  const cust = (n.customerName||"").replace(/[\s\/\\:*?"<>|（）()]+/g,"");
+  return "TFL Delivery Note "+(n.no||n.date||"")+(cust?"_"+cust:"")+".pdf";
+}
+/* 開緊／改緊嗰張轉做送貨單格式，預覽同 PDF 用 */
+function dnFromDraft(d){
+  return { no:d.no||"（儲存時自動編號）", date:d.date, customerName:d.customerName, contact:d.contact, phone:d.phone,
+    address:d.address, notes:d.notes, status:"pending",
+    lines:d.lines.filter(l=>Number(l.qty)>0).map(l=>({itemName:l.name, unit:l.unit, qty:Number(l.qty)})) };
+}
+function rerenderDnPreview(){
+  const box = document.querySelector("aside .doc");
+  if(box && state.dnDraft){ const tmp = document.createElement("div"); tmp.innerHTML = dnDocHTML(dnFromDraft(state.dnDraft)); box.replaceWith(tmp.firstElementChild); }
+}
+function newDnDraft(){
+  return { id:"", no:"", date:todayISO(), customerId:"", customerName:"", contact:"", phone:"", address:"", notes:"", lines:[] };
+}
+function viewDelivery(){
+  if(state.dnDraft) return viewDnEditor();
+  const list = state.deliveryNotes.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"") || (b.no||"").localeCompare(a.no||""));
+  const waiting = list.filter(n=>n.status==="pending").length;
+  return head("送貨單", "開俾送貨同事帶去嘅單，冇價錢。送到時同事喺員工系統叫客人簽收；月尾喺「開單」撳「匯入送貨單」計數。",
+      '<button class="btn pri" data-act="dn-new">＋ 開送貨單</button>')
+  + '<div class="card"><header><h2>最近三個月</h2><span class="hint">'+list.length+' 張 ・ 待送 '+waiting+' 張</span></header>'
+  + (list.length ? '<div class="tbl-wrap"><table class="inv-table"><thead><tr><th>單號</th><th>送貨日期</th><th>客戶</th><th>貨品</th><th>狀態</th><th></th></tr></thead><tbody>'
+    + list.map(n=>{
+        const st = DN_STATUS[n.status] || DN_STATUS.pending;
+        return '<tr><td class="c-no" style="font-family:var(--mono);white-space:nowrap">'+esc(n.no||"")+'</td>'
+        + '<td class="c-dt" style="font-family:var(--mono);white-space:nowrap">'+esc(n.date||"")+'</td>'
+        + '<td class="c-cu">'+esc(n.customerName||"")+(n.address?'<br><span class="hint">'+esc(n.address)+'</span>':"")+'</td>'
+        + '<td class="c-ct hint">'+esc(dnSummary(n))+'</td>'
+        + '<td class="c-st" style="white-space:nowrap"><span class="chip '+st.c+'">'+st.t+'</span>'
+        +   (n.invoiceNo?' <span class="chip mute">已開單 '+esc(n.invoiceNo)+'</span>':"")
+        +   (n.status==="signed"&&n.receiverName?'<br><span class="hint">收貨人：'+esc(n.receiverName)+'</span>':"")+'</td>'
+        + '<td class="c-act" style="white-space:nowrap">'
+        +   '<button class="btn sm" data-act="dn-pdf" data-id="'+esc(n.id)+'">PDF</button>'
+        +   '<button class="btn sm ghost" data-act="dn-print" data-id="'+esc(n.id)+'">列印</button>'
+        +   (n.status==="pending" ? '<button class="btn sm ghost" data-act="dn-edit" data-id="'+esc(n.id)+'">修改</button>' : "")
+        +   '<button class="btn sm ghost" data-act="dn-copy" data-id="'+esc(n.id)+'">複製</button>'
+        +   (n.status==="pending" ? '<button class="btn sm ghost" data-act="dn-del" data-id="'+esc(n.id)+'">刪除</button>' : "")
+        + '</td></tr>';
+      }).join("")
+    + '</tbody></table></div>'
+    : '<div class="empty"><b>仲未開過送貨單</b>㩒右上角「開送貨單」，揀客人同產品就得。</div>')
+  + '</div>'
+  + '<p class="hint" style="margin-top:12px">簽收咗嘅送貨單唔可以改（客人已經簽名，倉存亦已經扣咗）；PDF 會連客人簽名。要再送同樣嘅貨，撳「複製」。</p>';
+}
+function viewDnEditor(){
+  const d = state.dnDraft;
+  const unmatched = d.lines.filter(l=>l.productId ? !stockIdFor(l.productId, l.name) : !l.itemId).map(l=>l.name);
+  return head(d.id ? "修改送貨單 "+d.no : "開送貨單", "揀客人同產品；送貨單唔會印價錢。",
+      '<button class="btn ghost" data-act="dn-cancel">取消</button><button class="btn pri" data-act="dn-save">'+(d.id?"儲存修改":"開送貨單")+'</button>')
+  + '<div class="editor">'
+  + '<div style="display:flex;flex-direction:column;gap:16px">'
+  + '<section class="card"><header><h2>客人同日期</h2></header><div class="body"><div class="grid2">'
+  +   '<label class="fld"><span class="lbl">客戶</span><select data-dn="customerId"><option value="">— 未揀 —</option>'
+  +     state.customers.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant")).map(c=>'<option value="'+esc(c.id)+'"'+(c.id===d.customerId?" selected":"")+'>'+esc(c.name)+(c.company?" ／ "+esc(c.company):"")+'</option>').join("")
+  +   '</select></label>'
+  +   '<label class="fld"><span class="lbl">送貨日期</span><input type="date" data-dn="date" value="'+esc(d.date)+'"></label>'
+  +   '<label class="fld"><span class="lbl">客戶名稱（印喺送貨單）</span><input type="text" data-dn="customerName" value="'+esc(d.customerName)+'"></label>'
+  +   '<label class="fld"><span class="lbl">聯絡人</span><input type="text" data-dn="contact" value="'+esc(d.contact)+'"></label>'
+  +   '<label class="fld"><span class="lbl">電話</span><input type="text" data-dn="phone" value="'+esc(d.phone)+'"></label>'
+  +   '<label class="fld"><span class="lbl">送貨地址</span><input type="text" data-dn="address" value="'+esc(d.address)+'"></label>'
+  + '</div></div></section>'
+  + '<section class="card"><header><h2>貨品</h2><div class="spacer"></div><span class="hint">唔會印價錢</span></header>'
+  +   (d.lines.length
+      ? '<div class="tbl-wrap"><table><thead><tr><th>產品</th><th style="width:120px" class="num">數量</th><th style="width:70px">單位</th><th style="width:40px"></th></tr></thead><tbody>'
+        + d.lines.map((l,k)=>'<tr><td>'+esc(l.name)+'</td>'
+          + '<td><input type="number" class="num" min="0" step="any" data-dnl="qty" data-i="'+k+'" value="'+esc(l.qty)+'"></td>'
+          + '<td>'+esc(l.unit||"")+'</td>'
+          + '<td><button class="btn sm ghost" data-act="dn-line-del" data-i="'+k+'" aria-label="刪除呢一行">✕</button></td></tr>').join("")
+        + '</tbody></table></div>'
+      : '<div class="empty"><b>未揀產品</b>㩒下面「從產品表揀」。</div>')
+  +   '<div class="body" style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)">'
+  +     '<button class="btn sm pri" data-act="dn-pick-open">從產品表揀（可多選）</button></div>'
+  +   (unmatched.length ? '<div class="notice" style="margin:0 16px 16px">「'+unmatched.map(esc).join("」「")+'」未配對倉存貨品：照樣送、照樣開發票，但簽收後唔會自動扣倉存。去「產品」修改就可以配對。</div>' : "")
+  + '</section>'
+  + '<section class="card"><header><h2>備註</h2></header><div class="body">'
+  +   '<input type="text" data-dn="notes" value="'+esc(d.notes)+'" placeholder="例如：朝早 10 點前送到"></div></section>'
+  + '</div>'
+  + '<aside style="position:sticky;top:20px;display:flex;flex-direction:column;gap:14px">'
+  +   '<div class="row" style="justify-content:space-between"><span class="lbl" style="margin:0">送貨單預覽</span>'
+  +     '<button class="btn sm" data-act="dn-draft-pdf">下載 PDF</button></div>'
+  +   dnDocHTML(dnFromDraft(d))
+  + '</aside>'
+  + '</div>'
+  + (state.picker!=null ? pickerHTML() : "");
+}
+
 /* ---------------- 匯入送貨單（月結） ---------------- */
 function dnQty(n, k){ const r = n.receivedQty; return (r && r[k] != null) ? Number(r[k]) || 0 : Number(n.lines[k].qty) || 0; }
 function dnSummary(n){ return (n.lines||[]).map((l,k)=>l.itemName+" × "+(Math.round(dnQty(n,k)*1000)/1000)+" "+(l.unit||"")).join("、"); }
@@ -838,15 +988,18 @@ function downloadFile(filename, data, type){
 }
 
 /* ================= print / PDF ================= */
-function printInvoice(id){
-  const inv = state.invoices.find(v=>v.id===id) || state.draft; if(!inv) return;
-  $("#printhost").innerHTML = docHTML(inv);
+function printHTML(html, title){
+  $("#printhost").innerHTML = html;
   const old = document.title;
-  document.title = pdfFilename(inv,"pdf").slice(0,-4);   // 「另存為 PDF」時預設檔名
+  document.title = title;   // 「另存為 PDF」時預設檔名
   const restore = ()=>{ document.title = old; window.removeEventListener("afterprint", restore); };
   window.addEventListener("afterprint", restore);
   setTimeout(restore, 60000);
   window.print();
+}
+function printInvoice(id){
+  const inv = state.invoices.find(v=>v.id===id) || state.draft; if(!inv) return;
+  printHTML(docHTML(inv), pdfFilename(inv,"pdf").slice(0,-4));
 }
 /* 檔名跟返舊做法：TFL Invoice DDMMYYYYNNN_客戶.pdf */
 function pdfFilename(inv, ext){
@@ -876,16 +1029,20 @@ const DOC_CSS = ".doc{background:#fff;color:#141a1e;padding:0;font-size:12px;fon
  + ".doc .stamp{float:right;font-family:monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase;border:1.5px solid;padding:4px 10px;border-radius:2px}"
  + ".doc .stamp.p{color:#1b6d49}.doc .stamp.u{color:#8d5510}.doc .stamp.o{color:#9c2b21}";
 
-function standaloneHTML(inv){
-  return '<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(pdfFilename(inv,"pdf").slice(0,-4))+'</title>'
+function standaloneHTML(html, title){
+  return '<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'
     + '<style>@page{size:A4;margin:14mm}body{margin:0;background:#fff}'+DOC_CSS+'</style></head><body>'
-    + docHTML(inv) + '<script>window.onload=function(){setTimeout(function(){window.print();},350);};<\/script></body></html>';
+    + html + '<script>window.onload=function(){setTimeout(function(){window.print();},350);};<\/script></body></html>';
 }
 async function exportPDF(id){
   const inv = (id ? state.invoices.find(v=>v.id===id) : state.draft); if(!inv) return;
+  await exportDocPDF(docHTML(inv), pdfFilename(inv,"pdf"));
+}
+/* 單據或者送貨單 → A4 PDF；冇網絡攞唔到 PDF 工具就開列印頁 */
+async function exportDocPDF(html, filename){
   const host = document.createElement("div");
   host.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;background:#fff;padding:38px;z-index:-1";
-  host.innerHTML = docHTML(inv);
+  host.innerHTML = html;
   const card = host.firstElementChild;
   card.style.border="0"; card.style.boxShadow="none"; card.style.borderRadius="0"; card.style.padding="0";
   document.body.appendChild(host);
@@ -906,14 +1063,15 @@ async function exportPDF(id){
       pdf.addImage(img, "JPEG", 0, -y, pw, ih);
       y += ph; page++;
     }
-    downloadFile(pdfFilename(inv,"pdf"), pdf.output("blob"));
-    done = true; toast("PDF 已下載：" + pdfFilename(inv,"pdf"));
+    downloadFile(filename, pdf.output("blob"));
+    done = true; toast("PDF 已下載：" + filename);
   }catch(e){
     if(e && e.code === "declined"){ host.remove(); return; }
     // 冇網絡攞唔到 PDF 工具 → 開一個列印頁，揀「另存為 PDF」
+    const title = filename.replace(/\.pdf$/, "");
     const w = window.open("", "_blank");
-    if(w){ w.document.open(); w.document.write(standaloneHTML(inv)); w.document.close(); done = true; toast("已開列印頁 — 揀「另存為 PDF」就得"); }
-    else { downloadFile(pdfFilename(inv,"html"), standaloneHTML(inv), "text/html;charset=utf-8"); done = true; toast("已下載列印檔，打開佢再揀「另存為 PDF」"); }
+    if(w){ w.document.open(); w.document.write(standaloneHTML(html, title)); w.document.close(); done = true; toast("已開列印頁 — 揀「另存為 PDF」就得"); }
+    else { downloadFile(title+".html", standaloneHTML(html, title), "text/html;charset=utf-8"); done = true; toast("已下載列印檔，打開佢再揀「另存為 PDF」"); }
   }
   host.remove();
   if(!done) return;
@@ -962,11 +1120,23 @@ document.addEventListener("click", async e=>{
     case "renumber": { const old=d.no; d.no = await nextNo(d.date); toast("單號由 "+old+" 改做 "+d.no); render(); return; }
     case "line-add": d.lines.push({id:uid("l"),name:"",spec:"",qty:1,price:0}); render(); return;
     case "line-del": if(d.lines.length>1) d.lines.splice(+i,1); else d.lines=[{id:uid("l"),name:"",spec:"",qty:1,price:0}]; render(); return;
-    case "pick-open": state.picker = +i; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
+    case "pick-open": state.pickerFor = "invoice"; state.picker = +i; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
     case "picker-add": {
       const list = $("#picklist"); if(!list) return;
       const rows = Array.from(list.querySelectorAll(".pchk:checked"));
       if(!rows.length) return;
+      if(state.pickerFor==="delivery" && state.dnDraft){
+        const dn = state.dnDraft;
+        rows.forEach(chk=>{
+          const it = state.items.find(x=>x.id===chk.dataset.id); if(!it) return;
+          const q = chk.closest(".pi").querySelector(".pq");
+          const qty = Number(q && q.value) > 0 ? Number(q.value) : 1;
+          const same = dn.lines.find(l=>l.productId===it.id);
+          if(same) same.qty = (Number(same.qty)||0) + qty;
+          else dn.lines.push({key:uid("l"), productId:it.id, name:it.name, unit:it.unit||"", qty});
+        });
+        state.picker=null; render(); toast("已加入 "+rows.length+" 項"); return;
+      }
       let added = 0;
       rows.forEach(chk=>{
         const it = state.items.find(x=>x.id===chk.dataset.id); if(!it) return;
@@ -982,6 +1152,62 @@ document.addEventListener("click", async e=>{
       document.querySelectorAll("#picklist .pchk, #picklist .pgrp").forEach(c=>{ c.checked=false; c.indeterminate=false; });
       document.querySelectorAll("#picklist .pq").forEach(q=>{ q.value=""; });
       syncPick(); return; }
+    case "dn-new": state.dnDraft = newDnDraft(); state.tab = "delivery"; render(); return;
+    case "dn-edit": {
+      const n = state.deliveryNotes.find(x=>x.id===id);
+      if(!n || n.status!=="pending"){ toast("簽收咗嘅送貨單唔可以改"); return; }
+      state.dnDraft = { id:n.id, no:n.no, date:n.date, customerId:n.customerId||"", customerName:n.customerName||"",
+        contact:n.contact||"", phone:n.phone||"", address:n.address||"", notes:n.notes||"", createdAt:n.createdAt, createdBy:n.createdBy,
+        lines:(n.lines||[]).map(l=>({key:uid("l"), productId:l.productId||"", itemId:l.itemId||"", name:l.itemName, unit:l.unit||"", qty:l.qty})) };
+      render(); return; }
+    case "dn-cancel": state.dnDraft = null; state.picker = null; render(); return;
+    case "dn-pdf": case "dn-print": {
+      const n = state.deliveryNotes.find(x=>x.id===id); if(!n) return;
+      if(act==="dn-pdf") await exportDocPDF(dnDocHTML(n), dnFilename(n));
+      else printHTML(dnDocHTML(n), dnFilename(n).slice(0,-4));
+      return; }
+    case "dn-draft-pdf": {
+      const n = dnFromDraft(state.dnDraft);
+      await exportDocPDF(dnDocHTML(n), dnFilename(Object.assign({}, n, {no: state.dnDraft.no}))); return; }
+    case "dn-copy": {
+      const n = state.deliveryNotes.find(x=>x.id===id); if(!n) return;
+      state.dnDraft = { id:"", no:"", date:todayISO(), customerId:n.customerId||"", customerName:n.customerName||"",
+        contact:n.contact||"", phone:n.phone||"", address:n.address||"", notes:n.notes||"",
+        lines:(n.lines||[]).map(l=>({key:uid("l"), productId:l.productId||"", itemId:l.itemId||"", name:l.itemName, unit:l.unit||"", qty:l.qty})) };
+      render(); toast("已複製 "+(n.no||"")+"，改好日期同數量再撳「開送貨單」"); return; }
+    case "dn-line-del": state.dnDraft.lines.splice(+i,1); render(); return;
+    case "dn-pick-open": state.pickerFor = "delivery"; state.picker = 0; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
+    case "dn-save": {
+      const dn = state.dnDraft; if(!dn) return;
+      if(!dn.customerName.trim()){ toast("請揀客戶或者填客戶名稱"); return; }
+      const lines = dn.lines.filter(l=>Number(l.qty)>0);
+      if(!lines.length){ toast("最少要有一樣產品，數量大過 0"); return; }
+      const old = dn.id ? state.deliveryNotes.find(x=>x.id===dn.id) : null;
+      if(old && old.status!=="pending"){ toast("同事已經簽收咗，唔可以再改"); state.dnDraft=null; render(); return; }
+      const nid = dn.id || ("dn_"+uid());
+      const note = {
+        id: nid,
+        no: old && old.date===dn.date ? old.no : nextDnNo(dn.date, nid),
+        date: dn.date, customerId: dn.customerId, customerName: dn.customerName.trim(),
+        contact: dn.contact.trim(), phone: dn.phone.trim(), address: dn.address.trim(), notes: dn.notes.trim(),
+        // 員工系統用 itemId 扣倉存，productId 月尾直接對返開單台嘅產品
+        lines: lines.map(l=>({ itemId: l.productId ? stockIdFor(l.productId, l.name) : (l.itemId||""), productId: l.productId || undefined,
+          itemName: l.name, unit: l.unit||"", qty: Number(l.qty) })),
+        createdAt: (old && old.createdAt) || new Date().toISOString(), createdBy: (old && old.createdBy) || undefined,
+        status: "pending",
+      };
+      const i0 = state.deliveryNotes.findIndex(x=>x.id===nid);
+      if(i0>=0) state.deliveryNotes[i0] = note; else state.deliveryNotes.push(note);
+      saveDeliveryNote(note).catch(saveFail);
+      state.dnDraft = null; state.picker = null; render();
+      toast((old?"已改好 ":"已開送貨單 ")+note.no+"，同事喺員工系統「送貨單」見到"); return; }
+    case "dn-del": state.modal = confirmModal("刪除呢張送貨單？","dn-del-yes",id); render(); return;
+    case "dn-del-yes": {
+      const n = state.deliveryNotes.find(x=>x.id===id);
+      state.modal = null;
+      if(n && n.status!=="pending"){ toast("簽收咗嘅送貨單唔可以刪"); render(); return; }
+      state.deliveryNotes = state.deliveryNotes.filter(x=>x.id!==id);
+      deleteDeliveryNote(id).catch(saveFail); render(); toast("已刪除"); return; }
     case "dn-open":
       if(!d.customerId){ toast("請先揀客戶"); return; }
       openDeliveryImport(d.customerId); return;
@@ -990,18 +1216,22 @@ document.addEventListener("click", async e=>{
       const chosen = new Set(Array.from(document.querySelectorAll(".dnchk:checked")).map(c=>c.dataset.id));
       const notes = imp.notes.filter(n=>chosen.has(n.id));
       if(!notes.length){ toast("未揀送貨單"); return; }
-      // 按倉存貨品加埋實收數量，再對返開單台嘅產品同客戶價
+      // 每行先對返開單台產品：開單台開嘅有 productId；員工系統開嘅用倉存貨品或者同名產品。再按產品加埋。
       const sums = new Map();
       notes.forEach(n=>(n.lines||[]).forEach((l,k)=>{
-        const s = sums.get(l.itemId) || {name:l.itemName, qty:0};
-        s.qty += dnQty(n,k); sums.set(l.itemId, s);
+        const it = (l.productId && state.items.find(x=>x.id===l.productId))
+          || (l.itemId && state.items.find(x=>x.stockItemId===l.itemId))
+          || state.items.find(x=>x.name===l.itemName);
+        const key = it ? "p:"+it.id : "n:"+l.itemName;
+        const s = sums.get(key) || {it, name:l.itemName, qty:0};
+        s.qty += dnQty(n,k); sums.set(key, s);
       }));
       let unmatched = 0;
       const lines = [];
-      sums.forEach((s, stockId)=>{
+      sums.forEach(s=>{
         if(!s.qty) return;
         const qty = Math.round(s.qty*1000)/1000;
-        const it = state.items.find(x=>x.stockItemId===stockId) || state.items.find(x=>x.name===s.name);
+        const it = s.it;
         if(it) lines.push({id:uid("l"), itemId:it.id, name:it.name, spec:it.spec||"", qty, price:priceFor(it.id, d.customerId, it.price)});
         else { unmatched++; lines.push({id:uid("l"), name:s.name, spec:"未配對產品，請填單價", qty, price:0}); }
       });
@@ -1211,6 +1441,17 @@ document.addEventListener("input", e=>{
     if(Number(t.value) > 0) chk.checked = true;
     syncPick(); return;
   }
+  if(t.dataset.dn && state.dnDraft){
+    const dn = state.dnDraft, f = t.dataset.dn;
+    dn[f] = t.value;
+    if(f==="customerId"){
+      const c = customerById(t.value);
+      if(c){ dn.customerName = c.company ? c.name+"（"+c.company+"）" : c.name; dn.contact = c.contact||""; dn.phone = c.phone||""; dn.address = c.addr||c.deliverTo||""; }
+      render(); return;
+    }
+    rerenderDnPreview(); return;
+  }
+  if(t.dataset.dnl && state.dnDraft){ state.dnDraft.lines[+t.dataset.i][t.dataset.dnl] = t.value; rerenderDnPreview(); return; }
   const d = state.draft;
   if(t.dataset.f && d){
     const f = t.dataset.f;
@@ -1267,7 +1508,7 @@ document.addEventListener("keydown", e=>{
   if(e.key==="Escape" && (state.modal||state.picker!=null)){ state.modal=null; state.picker=null; render(); }
   if(e.altKey||e.ctrlKey||e.metaKey||state.gate!=="owner") return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-  const map = {n:"new",i:"invoices",c:"customers",p:"items",t:"tickets",r:"report"};
+  const map = {n:"new",d:"delivery",i:"invoices",c:"customers",p:"items",t:"tickets",r:"report"};
   const k = map[e.key.toLowerCase()];
   if(k){ state.tab=k; render(); }
 });
