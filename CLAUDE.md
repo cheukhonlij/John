@@ -80,7 +80,8 @@ React 19 + TypeScript (strict) + Vite 6 + Tailwind CSS 4 + lucide-react, managed
   開單台 → 匯入送貨單 resolves each line to an invItem (by `productId`, then `stockItemId`, then name),
   sums a month's signed notes per product into invoice lines and sets `invoiceId`/`invoiceNo` on the
   notes; deleting the invoice clears them. Cloud mode keeps notes from the last 62 days plus all pending
-  ones live.
+  ones live. 開單台 prints notes and makes their PDFs (`dnDocHTML`) through the same helpers as invoices
+  (`printHTML`, `exportDocPDF`); neither app lets anyone edit a signed note.
 - Leave and labour-law logic is in `src/utils/leave.ts` (HK Employment Ordinance: annual leave
   7→14 days by service year, sick-day accrual capped at 120, continuous contract = 68 hours in
   4 weeks from 18 Jan 2026). Statutory holidays are listed for 2026–2027 in `defaults.ts`;

@@ -782,6 +782,57 @@ function stockIdFor(productId, name){
   const s = state.stockItems.find(x=>x.name===(it ? it.name : name));
   return s ? s.id : "";
 }
+/* 送貨單 A4：冇價錢；簽收咗就連客人簽名、收貨人同時間 */
+function dnSignedAt(iso){
+  if(!iso) return "";
+  const d = new Date(iso), p2 = n=>String(n).padStart(2,"0");
+  return fmtHK(todayISOOf(d))+" "+p2(d.getHours())+":"+p2(d.getMinutes());
+}
+function todayISOOf(d){ return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); }
+function dnDocHTML(n){
+  const s = state.settings, signed = n.status==="signed";
+  const bizLines = [s.addrEn, s.addrZh, s.phone && ("Tel: "+s.phone), s.web].filter(Boolean);
+  const custLines = [n.address, (n.contact||n.phone) && ("Contact: "+[n.contact, n.phone].filter(Boolean).join(" "))].filter(Boolean);
+  const line = 'height:64px;border-bottom:1px solid #141a1e;display:flex;align-items:flex-end';
+  return '<div class="doc">'
+  + '<div class="dh"><div class="biz"><b>'+esc(s.brand||s.name||"Today\'s Food Lab")+'</b><small>'+bizLines.map(esc).join("<br>").replace(/\n/g,"<br>")+'</small></div>'
+  +   '<div class="dt"><b>Delivery Note</b><span class="no">'+esc(n.no||"—")+'</span>'
+  +     '<small>送貨單<br>DATE　'+esc(fmtHK(n.date))+'</small></div></div>'
+  + '<div class="parties"><div><em>Deliver to 送貨</em><strong>'+esc(n.customerName||"（未揀客戶）")+'</strong>'+(custLines.length?'<p>'+esc(custLines.join("\n"))+'</p>':"")+'</div>'
+  +   '<div style="flex:none;text-align:right">'+(signed?'<span class="stamp p">Received 已簽收</span>':"")+'</div></div>'
+  + '<table><thead><tr><th style="width:26px">#</th><th>DESCRIPTION 貨品</th><th class="r" style="width:70px">QTY 數量</th><th style="width:54px;padding-left:10px">UNIT</th>'
+  +   (signed?'<th class="r" style="width:86px">RECEIVED 實收</th>':"")+'</tr></thead><tbody>'
+  + (n.lines||[]).map((l,k)=>{
+      const got = signed ? dnQty(n,k) : null;
+      return '<tr><td>'+(k+1)+'</td><td>'+esc(l.itemName||"")+'</td><td class="r">'+(Math.round((Number(l.qty)||0)*1000)/1000)+'</td>'
+      + '<td style="padding-left:10px">'+esc(l.unit||"")+'</td>'
+      + (signed?'<td class="r"'+(got!==Number(l.qty)?' style="color:#9c2b21;font-weight:600"':"")+'>'+(Math.round(got*1000)/1000)+'</td>':"")+'</tr>';
+    }).join("")
+  + '</tbody></table>'
+  + '<div class="foot">'
+  +   '<div><em>Received by 收貨人簽名</em><div style="'+line+'">'+(n.signature?'<img src="'+esc(n.signature)+'" alt="" style="max-height:62px;max-width:100%">':"")+'</div>'
+  +     '<p style="margin-top:6px">收貨人：'+esc(n.receiverName||"")+(signed?'<br>簽收時間：'+esc(dnSignedAt(n.signedAt)):"")+'</p></div>'
+  +   '<div><em>Delivered by 送貨人</em><div style="'+line+'"><span style="font-size:12px;padding-bottom:4px">'+esc(n.signedBy||"")+'</span></div></div>'
+  + '</div>'
+  + ((n.notes||n.receivedNotes) ? '<div class="foot"><div><em>Notes 備註</em><p>'+esc([n.notes, n.receivedNotes && ("收貨備註："+n.receivedNotes)].filter(Boolean).join("\n"))+'</p></div></div>' : "")
+  + '<p style="margin:14px 0 0;color:#7b868d;font-size:10px">收貨時請核對貨品同數量。如有短缺或者損壞，請喺簽收前通知送貨人。</p>'
+  + '</div>';
+}
+/* 檔名：TFL Delivery Note DN20261026-01_客戶.pdf */
+function dnFilename(n){
+  const cust = (n.customerName||"").replace(/[\s\/\\:*?"<>|（）()]+/g,"");
+  return "TFL Delivery Note "+(n.no||n.date||"")+(cust?"_"+cust:"")+".pdf";
+}
+/* 開緊／改緊嗰張轉做送貨單格式，預覽同 PDF 用 */
+function dnFromDraft(d){
+  return { no:d.no||"（儲存時自動編號）", date:d.date, customerName:d.customerName, contact:d.contact, phone:d.phone,
+    address:d.address, notes:d.notes, status:"pending",
+    lines:d.lines.filter(l=>Number(l.qty)>0).map(l=>({itemName:l.name, unit:l.unit, qty:Number(l.qty)})) };
+}
+function rerenderDnPreview(){
+  const box = document.querySelector("aside .doc");
+  if(box && state.dnDraft){ const tmp = document.createElement("div"); tmp.innerHTML = dnDocHTML(dnFromDraft(state.dnDraft)); box.replaceWith(tmp.firstElementChild); }
+}
 function newDnDraft(){
   return { id:"", no:"", date:todayISO(), customerId:"", customerName:"", contact:"", phone:"", address:"", notes:"", lines:[] };
 }
@@ -803,22 +854,25 @@ function viewDelivery(){
         +   (n.invoiceNo?' <span class="chip mute">已開單 '+esc(n.invoiceNo)+'</span>':"")
         +   (n.status==="signed"&&n.receiverName?'<br><span class="hint">收貨人：'+esc(n.receiverName)+'</span>':"")+'</td>'
         + '<td class="c-act" style="white-space:nowrap">'
-        +   (n.status==="pending"
-            ? '<button class="btn sm ghost" data-act="dn-edit" data-id="'+esc(n.id)+'">修改</button><button class="btn sm ghost" data-act="dn-del" data-id="'+esc(n.id)+'">刪除</button>'
-            : "")
+        +   '<button class="btn sm" data-act="dn-pdf" data-id="'+esc(n.id)+'">PDF</button>'
+        +   '<button class="btn sm ghost" data-act="dn-print" data-id="'+esc(n.id)+'">列印</button>'
+        +   (n.status==="pending" ? '<button class="btn sm ghost" data-act="dn-edit" data-id="'+esc(n.id)+'">修改</button>' : "")
+        +   '<button class="btn sm ghost" data-act="dn-copy" data-id="'+esc(n.id)+'">複製</button>'
+        +   (n.status==="pending" ? '<button class="btn sm ghost" data-act="dn-del" data-id="'+esc(n.id)+'">刪除</button>' : "")
         + '</td></tr>';
       }).join("")
     + '</tbody></table></div>'
     : '<div class="empty"><b>仲未開過送貨單</b>㩒右上角「開送貨單」，揀客人同產品就得。</div>')
   + '</div>'
-  + '<p class="hint" style="margin-top:12px">要列印或者睇客人簽名，去員工系統「送貨單」。</p>';
+  + '<p class="hint" style="margin-top:12px">簽收咗嘅送貨單唔可以改（客人已經簽名，倉存亦已經扣咗）；PDF 會連客人簽名。要再送同樣嘅貨，撳「複製」。</p>';
 }
 function viewDnEditor(){
   const d = state.dnDraft;
   const unmatched = d.lines.filter(l=>l.productId ? !stockIdFor(l.productId, l.name) : !l.itemId).map(l=>l.name);
   return head(d.id ? "修改送貨單 "+d.no : "開送貨單", "揀客人同產品；送貨單唔會印價錢。",
       '<button class="btn ghost" data-act="dn-cancel">取消</button><button class="btn pri" data-act="dn-save">'+(d.id?"儲存修改":"開送貨單")+'</button>')
-  + '<div style="display:flex;flex-direction:column;gap:16px;max-width:860px">'
+  + '<div class="editor">'
+  + '<div style="display:flex;flex-direction:column;gap:16px">'
   + '<section class="card"><header><h2>客人同日期</h2></header><div class="body"><div class="grid2">'
   +   '<label class="fld"><span class="lbl">客戶</span><select data-dn="customerId"><option value="">— 未揀 —</option>'
   +     state.customers.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant")).map(c=>'<option value="'+esc(c.id)+'"'+(c.id===d.customerId?" selected":"")+'>'+esc(c.name)+(c.company?" ／ "+esc(c.company):"")+'</option>').join("")
@@ -844,6 +898,12 @@ function viewDnEditor(){
   + '</section>'
   + '<section class="card"><header><h2>備註</h2></header><div class="body">'
   +   '<input type="text" data-dn="notes" value="'+esc(d.notes)+'" placeholder="例如：朝早 10 點前送到"></div></section>'
+  + '</div>'
+  + '<aside style="position:sticky;top:20px;display:flex;flex-direction:column;gap:14px">'
+  +   '<div class="row" style="justify-content:space-between"><span class="lbl" style="margin:0">送貨單預覽</span>'
+  +     '<button class="btn sm" data-act="dn-draft-pdf">下載 PDF</button></div>'
+  +   dnDocHTML(dnFromDraft(d))
+  + '</aside>'
   + '</div>'
   + (state.picker!=null ? pickerHTML() : "");
 }
@@ -928,15 +988,18 @@ function downloadFile(filename, data, type){
 }
 
 /* ================= print / PDF ================= */
-function printInvoice(id){
-  const inv = state.invoices.find(v=>v.id===id) || state.draft; if(!inv) return;
-  $("#printhost").innerHTML = docHTML(inv);
+function printHTML(html, title){
+  $("#printhost").innerHTML = html;
   const old = document.title;
-  document.title = pdfFilename(inv,"pdf").slice(0,-4);   // 「另存為 PDF」時預設檔名
+  document.title = title;   // 「另存為 PDF」時預設檔名
   const restore = ()=>{ document.title = old; window.removeEventListener("afterprint", restore); };
   window.addEventListener("afterprint", restore);
   setTimeout(restore, 60000);
   window.print();
+}
+function printInvoice(id){
+  const inv = state.invoices.find(v=>v.id===id) || state.draft; if(!inv) return;
+  printHTML(docHTML(inv), pdfFilename(inv,"pdf").slice(0,-4));
 }
 /* 檔名跟返舊做法：TFL Invoice DDMMYYYYNNN_客戶.pdf */
 function pdfFilename(inv, ext){
@@ -966,16 +1029,20 @@ const DOC_CSS = ".doc{background:#fff;color:#141a1e;padding:0;font-size:12px;fon
  + ".doc .stamp{float:right;font-family:monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase;border:1.5px solid;padding:4px 10px;border-radius:2px}"
  + ".doc .stamp.p{color:#1b6d49}.doc .stamp.u{color:#8d5510}.doc .stamp.o{color:#9c2b21}";
 
-function standaloneHTML(inv){
-  return '<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(pdfFilename(inv,"pdf").slice(0,-4))+'</title>'
+function standaloneHTML(html, title){
+  return '<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'
     + '<style>@page{size:A4;margin:14mm}body{margin:0;background:#fff}'+DOC_CSS+'</style></head><body>'
-    + docHTML(inv) + '<script>window.onload=function(){setTimeout(function(){window.print();},350);};<\/script></body></html>';
+    + html + '<script>window.onload=function(){setTimeout(function(){window.print();},350);};<\/script></body></html>';
 }
 async function exportPDF(id){
   const inv = (id ? state.invoices.find(v=>v.id===id) : state.draft); if(!inv) return;
+  await exportDocPDF(docHTML(inv), pdfFilename(inv,"pdf"));
+}
+/* 單據或者送貨單 → A4 PDF；冇網絡攞唔到 PDF 工具就開列印頁 */
+async function exportDocPDF(html, filename){
   const host = document.createElement("div");
   host.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;background:#fff;padding:38px;z-index:-1";
-  host.innerHTML = docHTML(inv);
+  host.innerHTML = html;
   const card = host.firstElementChild;
   card.style.border="0"; card.style.boxShadow="none"; card.style.borderRadius="0"; card.style.padding="0";
   document.body.appendChild(host);
@@ -996,14 +1063,15 @@ async function exportPDF(id){
       pdf.addImage(img, "JPEG", 0, -y, pw, ih);
       y += ph; page++;
     }
-    downloadFile(pdfFilename(inv,"pdf"), pdf.output("blob"));
-    done = true; toast("PDF 已下載：" + pdfFilename(inv,"pdf"));
+    downloadFile(filename, pdf.output("blob"));
+    done = true; toast("PDF 已下載：" + filename);
   }catch(e){
     if(e && e.code === "declined"){ host.remove(); return; }
     // 冇網絡攞唔到 PDF 工具 → 開一個列印頁，揀「另存為 PDF」
+    const title = filename.replace(/\.pdf$/, "");
     const w = window.open("", "_blank");
-    if(w){ w.document.open(); w.document.write(standaloneHTML(inv)); w.document.close(); done = true; toast("已開列印頁 — 揀「另存為 PDF」就得"); }
-    else { downloadFile(pdfFilename(inv,"html"), standaloneHTML(inv), "text/html;charset=utf-8"); done = true; toast("已下載列印檔，打開佢再揀「另存為 PDF」"); }
+    if(w){ w.document.open(); w.document.write(standaloneHTML(html, title)); w.document.close(); done = true; toast("已開列印頁 — 揀「另存為 PDF」就得"); }
+    else { downloadFile(title+".html", standaloneHTML(html, title), "text/html;charset=utf-8"); done = true; toast("已下載列印檔，打開佢再揀「另存為 PDF」"); }
   }
   host.remove();
   if(!done) return;
@@ -1093,6 +1161,20 @@ document.addEventListener("click", async e=>{
         lines:(n.lines||[]).map(l=>({key:uid("l"), productId:l.productId||"", itemId:l.itemId||"", name:l.itemName, unit:l.unit||"", qty:l.qty})) };
       render(); return; }
     case "dn-cancel": state.dnDraft = null; state.picker = null; render(); return;
+    case "dn-pdf": case "dn-print": {
+      const n = state.deliveryNotes.find(x=>x.id===id); if(!n) return;
+      if(act==="dn-pdf") await exportDocPDF(dnDocHTML(n), dnFilename(n));
+      else printHTML(dnDocHTML(n), dnFilename(n).slice(0,-4));
+      return; }
+    case "dn-draft-pdf": {
+      const n = dnFromDraft(state.dnDraft);
+      await exportDocPDF(dnDocHTML(n), dnFilename(Object.assign({}, n, {no: state.dnDraft.no}))); return; }
+    case "dn-copy": {
+      const n = state.deliveryNotes.find(x=>x.id===id); if(!n) return;
+      state.dnDraft = { id:"", no:"", date:todayISO(), customerId:n.customerId||"", customerName:n.customerName||"",
+        contact:n.contact||"", phone:n.phone||"", address:n.address||"", notes:n.notes||"",
+        lines:(n.lines||[]).map(l=>({key:uid("l"), productId:l.productId||"", itemId:l.itemId||"", name:l.itemName, unit:l.unit||"", qty:l.qty})) };
+      render(); toast("已複製 "+(n.no||"")+"，改好日期同數量再撳「開送貨單」"); return; }
     case "dn-line-del": state.dnDraft.lines.splice(+i,1); render(); return;
     case "dn-pick-open": state.pickerFor = "delivery"; state.picker = 0; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
     case "dn-save": {
@@ -1365,11 +1447,11 @@ document.addEventListener("input", e=>{
     if(f==="customerId"){
       const c = customerById(t.value);
       if(c){ dn.customerName = c.company ? c.name+"（"+c.company+"）" : c.name; dn.contact = c.contact||""; dn.phone = c.phone||""; dn.address = c.addr||c.deliverTo||""; }
-      render();
+      render(); return;
     }
-    return;
+    rerenderDnPreview(); return;
   }
-  if(t.dataset.dnl && state.dnDraft){ state.dnDraft.lines[+t.dataset.i][t.dataset.dnl] = t.value; return; }
+  if(t.dataset.dnl && state.dnDraft){ state.dnDraft.lines[+t.dataset.i][t.dataset.dnl] = t.value; rerenderDnPreview(); return; }
   const d = state.draft;
   if(t.dataset.f && d){
     const f = t.dataset.f;

@@ -217,9 +217,10 @@ export const DeliveryNotes: React.FC<DeliveryNotesProps> = ({
           </button>
           <div className="flex-1" />
           {noteActions(viewing, false)}
+          {/* The print dialog's 另存為 PDF (Save as PDF) gives the same page as a file. */}
           <button onClick={() => printPage('portrait')} className={secondaryButtonClass}>
             <Printer className="w-4 h-4" />
-            列印
+            列印／PDF
           </button>
         </div>
         <NoteDocument note={viewing} companyName={companyName} />
