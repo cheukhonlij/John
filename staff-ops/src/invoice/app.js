@@ -3,6 +3,8 @@
 import {
   cloudEnabled, watchOwner, subscribeAll, putRecord, removeRecord,
   putSettings as cloudPutSettings, nextSequence, importBackup, exportBackup,
+  syncDeliveryCustomer, removeDeliveryCustomer, syncAllDeliveryCustomers, loadDeliveryCustomers,
+  loadStockItems, loadDeliveryNotesFor, markDeliveryNotes, unmarkDeliveryNotes, flushWrites,
 } from './store.js';
 
 (function(){
@@ -31,7 +33,9 @@ const state = {
   settings:{ name:"", brand:"Today's Food Lab", addrEn:"", addrZh:"", phone:"", email:"", web:"", br:"",
     bank:"", fps:"", forLine:"Instant Food (frozen)", terms:"7", note:"" },
   draft:null, invFilter:{q:"",status:"all",month:"all"}, reportMonth:monthOf(todayISO()),
-  picker:null, toast:null, modal:null, gate:"loading", netChecked:false
+  picker:null, toast:null, modal:null, gate:"loading", netChecked:false,
+  // 員工系統嗰邊：倉存貨品（產品配對用）、送貨客戶、匯入送貨單視窗
+  stockItems:[], deliveryCustomers:[], dnImport:null
 };
 
 /* ---------------- persistence：Firestore（只限老闆帳戶） ---------------- */
@@ -79,8 +83,16 @@ function applyData(d){
   ["customers","items","invoices","tickets"].forEach(c=>{ state[c] = d[c] || []; });
   state.settings = Object.assign({}, DEFAULT_SETTINGS, d.settings || {});
   if(!state.netChecked) setOnline(navigator.onLine);
-  if(!gotFirstData){ gotFirstData = true; render(); return; }
+  if(!gotFirstData){ gotFirstData = true; loadDeliverySide(); render(); return; }
   if(busyEditing()) pendingRefresh = true; else render();
+}
+/* 送貨單（員工系統）：讀倉存貨品；將客戶名稱、電話、地址抄過去（冇價錢）。 */
+let deliverySynced = false;
+function loadDeliverySide(){
+  loadStockItems().then(list=>{ state.stockItems = list; }).catch(e=>console.warn(e));
+  const sync = deliverySynced ? Promise.resolve(0) : syncAllDeliveryCustomers(state.customers);
+  deliverySynced = true;
+  sync.then(()=>loadDeliveryCustomers()).then(list=>{ state.deliveryCustomers = list; }).catch(e=>console.warn(e));
 }
 function connect(){
   if(!cloudEnabled){ state.gate = "no-cloud"; render(); return; }
@@ -216,7 +228,7 @@ function newDraft(){
   return { id:uid("inv"), no:"", date:todayISO(), dueDate:addDays(todayISO(),7), terms:state.settings.terms||"7",
     customerId:"", lines:[{id:uid("l"),name:"",spec:"",qty:1,price:0}], discType:"none", discVal:0, discLabel:"",
     delivery:0, paid:0, paidDate:"", method:"FPS 轉數快", status:"unpaid", notes:"", poRef:"",
-    forLine:state.settings.forLine||"", noteOnly:false, ticketId:"", ticketQty:0 };
+    forLine:state.settings.forLine||"", noteOnly:false, ticketId:"", ticketQty:0, deliveryNoteIds:[] };
 }
 function viewNew(){
   const d = state.draft || (state.draft = newDraft());
@@ -271,6 +283,8 @@ function viewNew(){
   +     '<div class="body" style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)">'
   +       '<button class="btn sm" data-act="line-add">＋ 加一行</button>'
   +       '<button class="btn sm pri" data-act="pick-open" data-i="'+(d.lines.length-1)+'">從產品表揀（可多選）</button>'
+  +       '<button class="btn sm" data-act="dn-open">匯入送貨單（月結）</button>'
+  +       ((d.deliveryNoteIds||[]).length ? '<span class="hint" style="align-self:center">已匯入 '+d.deliveryNoteIds.length+' 張送貨單</span>' : "")
   +     '</div>'
   +   '</section>'
 
@@ -669,7 +683,10 @@ function itemModal(it){
     + '<label class="fld"><span class="lbl">單位</span><input type="text" id="i_unit" value="'+esc(it.unit||"件")+'"></label>'
     + '<label class="fld"><span class="lbl">單價 HKD *</span><input type="number" step="0.01" class="num" id="i_price" value="'+(it.price||0)+'"></label>'
     + '</div>'
-    + '<label class="fld"><span class="lbl">規格／備註</span><input type="text" id="i_spec" value="'+esc(it.spec||"")+'" placeholder="例如：100g／包"></label>',
+    + '<label class="fld"><span class="lbl">規格／備註</span><input type="text" id="i_spec" value="'+esc(it.spec||"")+'" placeholder="例如：100g／包"></label>'
+    + '<label class="fld"><span class="lbl">對應倉存貨品（送貨單月結用）</span><select id="i_stock"><option value="">— 未配對（名稱一樣就自動對）—</option>'
+    +   state.stockItems.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant")).map(s=>'<option value="'+esc(s.id)+'"'+(it.stockItemId===s.id?" selected":"")+'>'+esc(s.name)+(s.unit?"（"+esc(s.unit)+"）":"")+'</option>').join("")
+    + '</select></label>',
     '<button class="btn" data-act="modal-close">取消</button><button class="btn pri" data-act="item-save">儲存</button>');
 }
 function ticketModal(t){
@@ -740,6 +757,50 @@ function settingsModal(){
     +   '</div>'
     + '</div>',
     '<button class="btn" data-act="modal-close">取消</button><button class="btn pri" data-act="settings-save">儲存</button>', true);
+}
+/* ---------------- 匯入送貨單（月結） ---------------- */
+function dnQty(n, k){ const r = n.receivedQty; return (r && r[k] != null) ? Number(r[k]) || 0 : Number(n.lines[k].qty) || 0; }
+function dnSummary(n){ return (n.lines||[]).map((l,k)=>l.itemName+" × "+(Math.round(dnQty(n,k)*1000)/1000)+" "+(l.unit||"")).join("、"); }
+function openDeliveryImport(customerId){
+  const t = todayISO();
+  // 月頭十日內開單，通常係計上個月
+  const month = state.dnImport ? state.dnImport.month : monthOf(Number(t.slice(8)) <= 10 ? addMonths(t, -1) : t);
+  state.dnImport = { customerId, month, notes:null };
+  state.modal = deliveryImportModal; render();
+  loadDeliveryNotesFor(customerId).then(list=>{
+    if(state.dnImport && state.dnImport.customerId===customerId){ state.dnImport.notes = list; render(); }
+  }).catch(e=>{ saveFail(e); if(state.dnImport){ state.dnImport.notes = []; render(); } });
+}
+function deliveryImportModal(){
+  const imp = state.dnImport, d = state.draft || {};
+  const custs = state.deliveryCustomers.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant"));
+  if(!custs.some(c=>c.id===imp.customerId)) custs.unshift({id:imp.customerId, name:(customerById(imp.customerId)||{}).name||"（呢個客戶）"});
+  let body = '<div class="hint">揀咗嘅送貨單會按產品將實收數量加埋，用呢個客戶嘅價錢計。出單之後送貨單會標記「已開單」，唔會重複匯入。</div>'
+    + '<div class="grid2">'
+    + '<label class="fld"><span class="lbl">送貨單上嘅客戶</span><select id="dn_cust">'+custs.map(c=>'<option value="'+esc(c.id)+'"'+(c.id===imp.customerId?" selected":"")+'>'+esc(c.name)+(c.company?" ／ "+esc(c.company):"")+'</option>').join("")+'</select></label>'
+    + '<label class="fld"><span class="lbl">月份</span><input type="month" id="dn_month" value="'+esc(imp.month)+'"></label>'
+    + '</div>';
+  if(!imp.notes){
+    body += '<div class="empty"><b>載入緊…</b></div>';
+  } else {
+    const inMonth = imp.notes.filter(n=>monthOf(n.date)===imp.month).sort((a,b)=>(a.date+a.no).localeCompare(b.date+b.no));
+    const here = new Set(d.deliveryNoteIds||[]);
+    const ready = inMonth.filter(n=>n.status==="signed" && !n.invoiceId && !here.has(n.id));
+    const done = inMonth.filter(n=>n.status==="signed" && (n.invoiceId || here.has(n.id)));
+    const waiting = inMonth.filter(n=>n.status!=="signed");
+    body += ready.length
+      ? '<div style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:var(--r)">'
+        + ready.map(n=>'<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-bottom:1px solid var(--line)">'
+          + '<input type="checkbox" class="dnchk" data-id="'+esc(n.id)+'" checked style="width:auto;margin-top:3px">'
+          + '<span style="flex:1;font-size:12.5px"><b style="font-family:var(--mono)">'+esc(n.no)+'</b> ・ '+esc(fmtHK(n.date))+' ・ 收貨人：'+esc(n.receiverName||"")
+          + '<br><span class="hint">'+esc(dnSummary(n))+'</span></span></label>').join("")
+        + '</div>'
+      : '<div class="empty"><b>呢個月冇未開單嘅已簽收送貨單</b></div>';
+    if(done.length) body += '<div class="hint">已開單：'+done.map(n=>esc(n.no)+(n.invoiceNo?"（"+esc(n.invoiceNo)+"）":"")).join("、")+'</div>';
+    if(waiting.length) body += '<div class="hint" style="color:var(--warn)">未簽收，唔會計入：'+waiting.map(n=>esc(n.no)).join("、")+'</div>';
+  }
+  return modalWrap("匯入送貨單", body,
+    '<button class="btn" data-act="modal-close">取消</button><button class="btn pri" data-act="dn-import">匯入</button>', true);
 }
 function confirmModal(msg, act, id, rid){
   return () => modalWrap("確認",'<p style="margin:0">'+esc(msg)+'</p>',
@@ -860,6 +921,12 @@ async function exportPDF(id){
 
 /* ================= events ================= */
 document.addEventListener("click", async e=>{
+  const back = e.target.closest("a.backlink");
+  if(back && cloudEnabled && state.gate === "owner"){
+    e.preventDefault();
+    await flushWrites().catch(()=>{});
+    location.href = back.href; return;
+  }
   const nav = e.target.closest(".navbtn");
   if(nav){ state.tab = nav.dataset.tab; state.picker=null; render(); return; }
   const btn = e.target.closest("[data-act]");
@@ -915,6 +982,37 @@ document.addEventListener("click", async e=>{
       document.querySelectorAll("#picklist .pchk, #picklist .pgrp").forEach(c=>{ c.checked=false; c.indeterminate=false; });
       document.querySelectorAll("#picklist .pq").forEach(q=>{ q.value=""; });
       syncPick(); return; }
+    case "dn-open":
+      if(!d.customerId){ toast("請先揀客戶"); return; }
+      openDeliveryImport(d.customerId); return;
+    case "dn-import": {
+      const imp = state.dnImport; if(!imp || !imp.notes) return;
+      const chosen = new Set(Array.from(document.querySelectorAll(".dnchk:checked")).map(c=>c.dataset.id));
+      const notes = imp.notes.filter(n=>chosen.has(n.id));
+      if(!notes.length){ toast("未揀送貨單"); return; }
+      // 按倉存貨品加埋實收數量，再對返開單台嘅產品同客戶價
+      const sums = new Map();
+      notes.forEach(n=>(n.lines||[]).forEach((l,k)=>{
+        const s = sums.get(l.itemId) || {name:l.itemName, qty:0};
+        s.qty += dnQty(n,k); sums.set(l.itemId, s);
+      }));
+      let unmatched = 0;
+      const lines = [];
+      sums.forEach((s, stockId)=>{
+        if(!s.qty) return;
+        const qty = Math.round(s.qty*1000)/1000;
+        const it = state.items.find(x=>x.stockItemId===stockId) || state.items.find(x=>x.name===s.name);
+        if(it) lines.push({id:uid("l"), itemId:it.id, name:it.name, spec:it.spec||"", qty, price:priceFor(it.id, d.customerId, it.price)});
+        else { unmatched++; lines.push({id:uid("l"), name:s.name, spec:"未配對產品，請填單價", qty, price:0}); }
+      });
+      d.lines = d.lines.filter(l=>l.name || lineTotal(l)).concat(lines);
+      if(!d.lines.length) d.lines = [{id:uid("l"),name:"",spec:"",qty:1,price:0}];
+      d.deliveryNoteIds = Array.from(new Set((d.deliveryNoteIds||[]).concat(notes.map(n=>n.id))));
+      const ref = "送貨單：" + notes.map(n=>n.no).sort().join("、");
+      d.notes = d.notes ? d.notes + "\n" + ref : ref;
+      state.modal = null; state.dnImport = null; render();
+      toast("已匯入 "+notes.length+" 張送貨單"+(unmatched ? "；有 "+unmatched+" 項未配對產品，請填單價" : ""));
+      return; }
     case "mark-full": { const c=calc(d); d.paid=c.total; d.paidDate = d.paidDate||todayISO(); render(); return; }
     case "use-ticket": state.modal = useTicketModal(); render(); return;
     case "use-ticket-save": {
@@ -942,6 +1040,7 @@ document.addEventListener("click", async e=>{
         }
       }
       await put("invoices", d.id, d);
+      if((d.deliveryNoteIds||[]).length) markDeliveryNotes(d.deliveryNoteIds, d.id, d.no).catch(saveFail);
       toast(isDraft? "已存做草稿 "+d.no : "已出單 "+d.no);
       state.draft = newDraft(); state.tab = "invoices"; render(); return; }
 
@@ -956,7 +1055,7 @@ document.addEventListener("click", async e=>{
       c.id = uid("inv"); c.no = ""; c.date = todayISO();
       c.dueDate = addDays(c.date, Number(c.terms)||0);
       c.paid = 0; c.paidDate = ""; c.status = "unpaid";
-      c.ticketId = ""; c.ticketQty = 0; c.ticketApplied = false;
+      c.ticketId = ""; c.ticketQty = 0; c.ticketApplied = false; c.deliveryNoteIds = [];
       c.lines = (c.lines||[]).map(l=>Object.assign({}, l, {id:uid("l")}));
       state.draft = c; state.tab = "new"; render();
       toast("已複製 "+(v.no||"")+" 嘅內容，出單時會攞新單號"); return; }
@@ -968,14 +1067,14 @@ document.addEventListener("click", async e=>{
       c.id = uid("inv");
       if(!c.no || (src && src.no === c.no)) c.no = await nextNo(c.date);
       c.status = "issued";
-      c.ticketId = ""; c.ticketQty = 0; c.ticketApplied = false;
+      c.ticketId = ""; c.ticketQty = 0; c.ticketApplied = false; c.deliveryNoteIds = [];
       c.lines = c.lines.filter(l=>l.name || lineTotal(l)).map(l=>Object.assign({}, l, {id:uid("l")}));
       await put("invoices", c.id, c);
       toast("已另存為新單 "+c.no+"，原單 "+((src&&src.no)||"")+" 冇改動");
       state.draft = newDraft(); state.tab = "invoices"; render(); return; }
     case "inv-paid": { const v = state.invoices.find(x=>x.id===id); if(v){ const c=calc(v); await put("invoices", v.id, Object.assign({},v,{paid:c.total, paidDate:v.paidDate||todayISO()})); toast("已標記收齊"); } return; }
     case "inv-del": state.modal = confirmModal("刪除呢張單據？刪咗就冇得復原。","inv-del-yes",id); render(); return;
-    case "inv-del-yes": state.modal=null; await remove("invoices", id); toast("已刪除"); return;
+    case "inv-del-yes": state.modal=null; await remove("invoices", id); unmarkDeliveryNotes(id).catch(saveFail); toast("已刪除"); return;
     case "export-invoices": {
       let list = state.invoices.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
       await saveCSV("todays-invoices-"+todayISO()+".csv", invoiceRows(list)); return; }
@@ -998,10 +1097,14 @@ document.addEventListener("click", async e=>{
         terms:$("#c_terms").value, contact:$("#c_contact").value.trim(), phone:$("#c_phone").value.trim(),
         email:$("#c_email").value.trim(), addr:$("#c_addr").value.trim(),
         deliverTo:$("#c_deliverto").value.trim(), prices });
+      syncDeliveryCustomer(cid, customerById(cid)).then(loadDeliveryCustomers).then(list=>{ state.deliveryCustomers = list; }).catch(saveFail);
       if(state.tab==="new" && state.draft && !state.draft.customerId){ state.draft.customerId = cid; applyCustomerDefaults(); }
       state.modal=null; toast("已儲存客戶"); render(); return; }
     case "cust-del": state.modal = confirmModal("刪除呢個客戶？佢過往嘅單據會保留，但單上會顯示「未指定」。","cust-del-yes",id); render(); return;
-    case "cust-del-yes": state.modal=null; await remove("customers", id); return;
+    case "cust-del-yes":
+      state.modal=null; await remove("customers", id);
+      removeDeliveryCustomer(id).catch(saveFail);
+      state.deliveryCustomers = state.deliveryCustomers.filter(x=>x.id!==id); return;
     case "cust-invoice": state.draft = newDraft(); state.draft.customerId = id; applyCustomerDefaults(); state.tab="new"; render(); return;
 
     /* --- items --- */
@@ -1011,7 +1114,8 @@ document.addEventListener("click", async e=>{
       const name = $("#i_name").value.trim();
       if(!name){ toast("請填產品名稱"); return; }
       await put("items", $("#i_id").value || uid("p"), { name, cat:$("#i_cat").value.trim()||"其他",
-        unit:$("#i_unit").value.trim()||"件", price:Number($("#i_price").value)||0, spec:$("#i_spec").value.trim() });
+        unit:$("#i_unit").value.trim()||"件", price:Number($("#i_price").value)||0, spec:$("#i_spec").value.trim(),
+        stockItemId:$("#i_stock").value });
       state.modal=null; toast("已儲存產品"); render(); return; }
     case "item-del": state.modal = confirmModal("刪除呢個產品？舊單據上嘅價錢唔會受影響。","item-del-yes",id); render(); return;
     case "item-del-yes": state.modal=null; await remove("items", id); return;
@@ -1136,6 +1240,8 @@ document.addEventListener("change", e=>{
   if(t.dataset.f==="no"){ render(); return; }
   if(t.dataset.fi){ state.invFilter[t.dataset.fi] = t.value; render(); return; }
   if(t.id==="rmonth"){ state.reportMonth = t.value; render(); return; }
+  if(t.id==="dn_month" && state.dnImport){ state.dnImport.month = t.value; render(); return; }
+  if(t.id==="dn_cust" && state.dnImport){ openDeliveryImport(t.value); return; }
   if(t.dataset.l==="name" && state.draft){
     const l = state.draft.lines[+t.dataset.i]; if(!l) return;
     const it = state.items.find(x=>x.name===t.value);

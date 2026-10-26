@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { KeyRound, Lock, LogOut, Menu, Receipt, X } from 'lucide-react';
 import {
+  DEFAULT_DELIVERY_CUSTOMERS,
+  DEFAULT_DELIVERY_NOTES,
   DEFAULT_EMPLOYEES,
   DEFAULT_HOLIDAYS,
   DEFAULT_LEAVES,
@@ -15,7 +17,7 @@ import {
 import { AppData, useCloudAppData, useLocalAppData } from './data/store';
 import { useStoredState } from './hooks/useStoredState';
 import { cloudEnabled } from './lib/firebase';
-import { UserProfile, getOwnerUid, signOutUser, useAuthSession } from './lib/cloud';
+import { UserProfile, flushPendingWrites, getOwnerUid, signOutUser, useAuthSession } from './lib/cloud';
 import { Dashboard, NavTab } from './components/Dashboard';
 import { RosterPlanner } from './components/RosterPlanner';
 import { DailyWorkflow } from './components/DailyWorkflow';
@@ -24,6 +26,7 @@ import { LeaveManager } from './components/LeaveManager';
 import { SOPLibrary } from './components/SOPLibrary';
 import { StaffManager } from './components/StaffManager';
 import { CloudSettings, LocalSettings } from './components/Settings';
+import { DeliveryNotes } from './components/DeliveryNotes';
 import { ChangePasswordModal, LoadingScreen, LoginScreen, NoAccessScreen } from './components/CloudAuth';
 import { Modal, inputClass, primaryButtonClass } from './components/ui';
 
@@ -32,6 +35,7 @@ const NAV_ITEMS: { id: NavTab; label: string; managerOnly?: boolean }[] = [
   { id: 'roster', label: '排更' },
   { id: 'workflow', label: '每日流程' },
   { id: 'inventory', label: '倉存／入貨落貨' },
+  { id: 'delivery', label: '送貨單' },
   { id: 'leave', label: '假期' },
   { id: 'sop', label: 'SOP' },
   { id: 'staff', label: '員工' },
@@ -141,6 +145,8 @@ const LocalApp: React.FC = () => {
     data.saveLeaves([]);
     data.saveChecks([]);
     data.saveMovements([]);
+    data.saveDeliveryNotes([]);
+    data.saveDeliveryCustomers([]);
     setCurrentUserId('');
   };
 
@@ -155,6 +161,8 @@ const LocalApp: React.FC = () => {
     data.saveSops(DEFAULT_SOPS);
     data.saveStockItems(DEFAULT_STOCK_ITEMS);
     data.saveMovements(DEFAULT_MOVEMENTS);
+    data.saveDeliveryCustomers(DEFAULT_DELIVERY_CUSTOMERS);
+    data.saveDeliveryNotes(DEFAULT_DELIVERY_NOTES);
   };
 
   const userPicker = (className: string) => (
@@ -294,6 +302,10 @@ const Shell: React.FC<{
           {isOwner && (
             <a
               href="/invoice"
+              onClick={(e) => {
+                e.preventDefault();
+                flushPendingWrites().finally(() => window.location.assign('/invoice'));
+              }}
               title="只有你睇到呢個分頁"
               className="ml-auto px-3.5 py-3 text-sm font-black whitespace-nowrap border-b-[3px] border-transparent text-slate-400 hover:text-slate-900 flex items-center gap-1.5"
             >
@@ -363,6 +375,21 @@ const Shell: React.FC<{
                 isManager={isManager}
                 currentUserName={currentUser?.name || ''}
                 onSaveItems={data.saveStockItems}
+                onSaveMovements={data.saveMovements}
+              />
+            )}
+            {tab === 'delivery' && (
+              <DeliveryNotes
+                notes={data.deliveryNotes}
+                customers={data.deliveryCustomers}
+                items={data.stockItems}
+                movements={data.movements}
+                companyName={data.settings.companyName}
+                isManager={isManager}
+                currentUserName={currentUser?.name || ''}
+                customersFromInvoice={cloudEnabled}
+                onSaveNotes={data.saveDeliveryNotes}
+                onSaveCustomers={data.saveDeliveryCustomers}
                 onSaveMovements={data.saveMovements}
               />
             )}

@@ -25,6 +25,7 @@ import {
   query,
   setDoc,
   updateDoc,
+  waitForPendingWrites,
   writeBatch,
 } from 'firebase/firestore';
 import { firebaseConfig, getFirebase } from './firebase';
@@ -45,6 +46,8 @@ export const COLLECTIONS = {
   stockItems: 'stockItems',
   movements: 'movements',
   stockLevels: 'stockLevels',
+  deliveryCustomers: 'deliveryCustomers',
+  deliveryNotes: 'deliveryNotes',
   users: 'users',
   config: 'config',
 } as const;
@@ -62,6 +65,8 @@ export const BACKUP_KEY_TO_COLLECTION: Record<string, string> = {
   [STORAGE_KEYS.SOPS]: COLLECTIONS.sops,
   [STORAGE_KEYS.STOCK_ITEMS]: COLLECTIONS.stockItems,
   [STORAGE_KEYS.MOVEMENTS]: COLLECTIONS.movements,
+  [STORAGE_KEYS.DELIVERY_CUSTOMERS]: COLLECTIONS.deliveryCustomers,
+  [STORAGE_KEYS.DELIVERY_NOTES]: COLLECTIONS.deliveryNotes,
 };
 
 /** Document id for a record; holidays are keyed by date, everything else by id. */
@@ -87,6 +92,13 @@ export const reportWriteError = (err: unknown) => {
   const code = (err as { code?: string })?.code;
   alert(code === 'permission-denied' ? '儲存失敗：你冇權限做呢個改動。' : '儲存失敗，請檢查網絡後再試。');
 };
+
+/**
+ * Before going to another page (the staff app ↔ 開單台), give writes made a
+ * moment ago up to 3 seconds to reach the server, so leaving cannot drop them.
+ */
+export const flushPendingWrites = () =>
+  Promise.race([waitForPendingWrites(getFirebase().db), new Promise((resolve) => setTimeout(resolve, 3000))]);
 
 const commitInChunks = async (ops: ((batch: WriteBatch) => void)[]) => {
   const { db } = getFirebase();

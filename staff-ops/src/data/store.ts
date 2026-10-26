@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { where } from 'firebase/firestore';
 import {
   AppSettings,
+  DeliveryCustomer,
+  DeliveryNote,
   Employee,
   Holiday,
   LeaveRecord,
@@ -14,6 +16,8 @@ import {
   WorkflowTask,
 } from '../types';
 import {
+  DEFAULT_DELIVERY_CUSTOMERS,
+  DEFAULT_DELIVERY_NOTES,
   DEFAULT_EMPLOYEES,
   DEFAULT_HOLIDAYS,
   DEFAULT_LEAVES,
@@ -60,6 +64,10 @@ export interface AppData {
   saveMovements: Saver<StockMovement[]>;
   /** Current quantity per stock item id; an entry exists once an item has records. */
   levels: Map<string, number>;
+  deliveryCustomers: DeliveryCustomer[];
+  saveDeliveryCustomers: Saver<DeliveryCustomer[]>;
+  deliveryNotes: DeliveryNote[];
+  saveDeliveryNotes: Saver<DeliveryNote[]>;
   /**
    * Cloud mode keeps only recent shifts, ticks and movements live. Screens call
    * these to widen the window when someone looks further back. Local mode
@@ -86,6 +94,11 @@ export const useLocalAppData = (): AppData => {
   const [stockItems, saveStockItems] = useStoredState<StockItem[]>(STORAGE_KEYS.STOCK_ITEMS, DEFAULT_STOCK_ITEMS);
   const [movements, saveMovements] = useStoredState<StockMovement[]>(STORAGE_KEYS.MOVEMENTS, DEFAULT_MOVEMENTS);
   const levels = useMemo(() => computeStockLevels(movements), [movements]);
+  const [deliveryCustomers, saveDeliveryCustomers] = useStoredState<DeliveryCustomer[]>(
+    STORAGE_KEYS.DELIVERY_CUSTOMERS,
+    DEFAULT_DELIVERY_CUSTOMERS
+  );
+  const [deliveryNotes, saveDeliveryNotes] = useStoredState<DeliveryNote[]>(STORAGE_KEYS.DELIVERY_NOTES, DEFAULT_DELIVERY_NOTES);
 
   return {
     ready: true,
@@ -101,6 +114,8 @@ export const useLocalAppData = (): AppData => {
     stockItems, saveStockItems,
     movements, saveMovements,
     levels,
+    deliveryCustomers, saveDeliveryCustomers,
+    deliveryNotes, saveDeliveryNotes,
   };
 };
 
@@ -108,6 +123,7 @@ export const useLocalAppData = (): AppData => {
 const SHIFT_WINDOW_DAYS = 56; // covers the part-time 4-week hour check
 const CHECK_WINDOW_DAYS = 14;
 const MOVEMENT_WINDOW_DAYS = 60;
+const DELIVERY_WINDOW_DAYS = 62; // this month and last, for month-end invoicing
 
 const byKindThenId = (a: StockItem, b: StockItem) =>
   a.kind === b.kind ? 0 : a.kind === 'product' ? -1 : 1;
@@ -143,6 +159,14 @@ export const useCloudAppData = (): AppData => {
     extraOps: stockLevelOps,
   });
   const [levelDocs, , r11] = useCloudCollection<StockLevelDoc>(COLLECTIONS.stockLevels);
+  const [deliveryCustomers, saveDeliveryCustomers, r12] = useCloudCollection<DeliveryCustomer>(COLLECTIONS.deliveryCustomers, {
+    sort: (a, b) => a.name.localeCompare(b.name, 'zh-Hant'),
+  });
+  // Recent notes, plus any still waiting to be delivered however old.
+  const [deliveryNotes, saveDeliveryNotes, r13] = useCloudCollection<DeliveryNote>(COLLECTIONS.deliveryNotes, {
+    queries: [[where('date', '>=', addDays(today, -DELIVERY_WINDOW_DAYS))], [where('status', '==', 'pending')]],
+    queryKey: today,
+  });
   const levels = useMemo(
     // Increments can leave float noise (0.1 + 0.2), so round like local mode does.
     () => new Map(levelDocs.map((d) => [d.itemId, Math.round(d.qty * 1000) / 1000])),
@@ -150,7 +174,7 @@ export const useCloudAppData = (): AppData => {
   );
 
   return {
-    ready: r1 && r2 && r3 && r4 && r5 && r6 && r7 && r8 && r9 && r10 && r11,
+    ready: r1 && r2 && r3 && r4 && r5 && r6 && r7 && r8 && r9 && r10 && r11 && r12 && r13,
     settings, saveSettings,
     employees, saveEmployees,
     templates, saveTemplates,
@@ -163,6 +187,8 @@ export const useCloudAppData = (): AppData => {
     stockItems, saveStockItems,
     movements, saveMovements,
     levels,
+    deliveryCustomers, saveDeliveryCustomers,
+    deliveryNotes, saveDeliveryNotes,
     history: {
       ensureShiftsFrom: (date) => date < shiftsFrom && setShiftsFrom(date),
       ensureChecksFrom: (date) => date < checksFrom && setChecksFrom(date),

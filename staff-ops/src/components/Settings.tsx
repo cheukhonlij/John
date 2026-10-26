@@ -111,11 +111,11 @@ export const LocalSettings: React.FC<SettingsProps> = ({ settings, onSaveSetting
       <Panel title="開始正式使用">
         <div className="p-5 space-y-3">
           <p className="text-xs text-slate-600 font-medium">
-            系統預載咗示範資料。正式使用前可以清除示範員工、更表、假期、流程打剔同倉存紀錄；SOP、每日流程、貨品清單、更份同法定假日會保留，方便你直接修改。
+            系統預載咗示範資料。正式使用前可以清除示範員工、更表、假期、流程打剔、倉存紀錄同送貨單；SOP、每日流程、貨品清單、更份同法定假日會保留，方便你直接修改。
           </p>
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => confirm('清除所有員工、更表、假期、流程打剔同倉存紀錄？呢個動作唔可以復原（建議先匯出備份）。') && onClearRecords()}
+              onClick={() => confirm('清除所有員工、更表、假期、流程打剔、倉存紀錄同送貨單？呢個動作唔可以復原（建議先匯出備份）。') && onClearRecords()}
               className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-black border border-rose-200 flex items-center gap-2 cursor-pointer"
             >
               <Eraser className="w-4 h-4" />

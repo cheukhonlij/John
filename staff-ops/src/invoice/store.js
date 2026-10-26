@@ -8,12 +8,16 @@ import { onAuthStateChanged } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
   onSnapshot,
+  query,
   runTransaction,
   setDoc,
+  waitForPendingWrites,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import { cloudEnabled, getFirebase } from '../lib/firebase';
@@ -29,6 +33,11 @@ export const INV_COLLECTIONS = {
 const COUNTERS = 'invCounters';
 const CONFIG = 'invConfig';
 const SETTINGS_ID = 'settings';
+
+// 員工系統嘅送貨單（staff-ops）：開單台抄客戶資料過去，月尾由送貨單開單。
+const DELIVERY_CUSTOMERS = 'deliveryCustomers';
+const DELIVERY_NOTES = 'deliveryNotes';
+const STOCK_ITEMS = 'stockItems';
 
 /**
  * 睇住登入狀態：cb({ state: 'signed-out' | 'not-owner' | 'owner', user })
@@ -95,6 +104,12 @@ export function putRecord(kind, id, data) {
 export function removeRecord(kind, id) {
   const { db } = getFirebase();
   return deleteDoc(doc(db, INV_COLLECTIONS[kind], id));
+}
+
+/** 轉去員工系統之前，等啱啱嘅改動送出（最多 3 秒），轉頁唔會漏咗。 */
+export function flushWrites() {
+  const { db } = getFirebase();
+  return Promise.race([waitForPendingWrites(db), new Promise((resolve) => setTimeout(resolve, 3000))]);
 }
 
 export function putSettings(settings) {
@@ -177,3 +192,86 @@ export async function exportBackup() {
   });
   return out;
 }
+
+/* ---------------- 送貨單 ---------------- */
+
+const commitAll = async (ops) => {
+  const { db } = getFirebase();
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = writeBatch(db);
+    ops.slice(i, i + 400).forEach((op) => op(batch));
+    await batch.commit();
+  }
+};
+
+/** 員工睇到嘅客戶資料：名稱、聯絡人、電話、地址。冇價錢。 */
+const deliveryCustomerOf = (id, c) => ({
+  id,
+  name: c.name || '',
+  company: c.company || '',
+  contact: c.contact || '',
+  phone: c.phone || '',
+  address: c.addr || c.deliverTo || '',
+});
+
+export function syncDeliveryCustomer(id, customer) {
+  const { db } = getFirebase();
+  return setDoc(doc(db, DELIVERY_CUSTOMERS, id), deliveryCustomerOf(id, customer));
+}
+
+export function removeDeliveryCustomer(id) {
+  const { db } = getFirebase();
+  return deleteDoc(doc(db, DELIVERY_CUSTOMERS, id));
+}
+
+/** 將未抄過去或者有改動嘅客戶一次過抄去員工系統。返回抄咗幾多個。 */
+export async function syncAllDeliveryCustomers(customers) {
+  const { db } = getFirebase();
+  const snap = await getDocs(collection(db, DELIVERY_CUSTOMERS));
+  const current = new Map(snap.docs.map((d) => [d.id, d.data()]));
+  const ops = [];
+  customers.forEach((c) => {
+    const want = deliveryCustomerOf(c.id, c);
+    const have = current.get(c.id);
+    if (!have || Object.keys(want).some((k) => (have[k] || '') !== want[k])) {
+      ops.push((batch) => batch.set(doc(db, DELIVERY_CUSTOMERS, c.id), want));
+    }
+  });
+  await commitAll(ops);
+  return ops.length;
+}
+
+export async function loadDeliveryCustomers() {
+  const { db } = getFirebase();
+  const snap = await getDocs(collection(db, DELIVERY_CUSTOMERS));
+  return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+}
+
+/** 倉存貨品（名稱同單位），產品配對用。 */
+export async function loadStockItems() {
+  const { db } = getFirebase();
+  const snap = await getDocs(collection(db, STOCK_ITEMS));
+  return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+}
+
+export async function loadDeliveryNotesFor(customerId) {
+  const { db } = getFirebase();
+  const snap = await getDocs(query(collection(db, DELIVERY_NOTES), where('customerId', '==', customerId)));
+  return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+}
+
+/** 開單之後，標記送貨單已經開咗單，下次唔會再匯入。 */
+export function markDeliveryNotes(ids, invoiceId, invoiceNo) {
+  const { db } = getFirebase();
+  return commitAll(ids.map((id) => (batch) => batch.update(doc(db, DELIVERY_NOTES, id), { invoiceId, invoiceNo })));
+}
+
+/** 刪單時放返嗰張單匯入過嘅送貨單出嚟，可以再開單。 */
+export async function unmarkDeliveryNotes(invoiceId) {
+  const { db } = getFirebase();
+  const snap = await getDocs(query(collection(db, DELIVERY_NOTES), where('invoiceId', '==', invoiceId)));
+  return commitAll(
+    snap.docs.map((d) => (batch) => batch.update(d.ref, { invoiceId: deleteField(), invoiceNo: deleteField() }))
+  );
+}
+

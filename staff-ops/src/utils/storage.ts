@@ -13,6 +13,8 @@ export const STORAGE_KEYS = {
   SOPS: 'todays_ops_sops_v1',
   STOCK_ITEMS: 'todays_ops_stock_items_v1',
   MOVEMENTS: 'todays_ops_stock_movements_v1',
+  DELIVERY_CUSTOMERS: 'todays_ops_delivery_customers_v1',
+  DELIVERY_NOTES: 'todays_ops_delivery_notes_v1',
 } as const;
 
 export const loadStored = <T,>(key: string, fallback: T): T => {
