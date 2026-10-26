@@ -254,6 +254,43 @@ export async function loadStockItems() {
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 
+/** 即時同步最近三個月同仲未送嘅送貨單（開單台「送貨單」頁用）。 */
+export function subscribeDeliveryNotes(onData, onError) {
+  const { db } = getFirebase();
+  const since = new Date(Date.now() - 92 * 864e5).toISOString().slice(0, 10);
+  const parts = [new Map(), new Map()];
+  const emit = () => {
+    const all = new Map([...parts[0], ...parts[1]]);
+    onData(Array.from(all.values()));
+  };
+  const queries = [
+    query(collection(db, DELIVERY_NOTES), where('date', '>=', since)),
+    query(collection(db, DELIVERY_NOTES), where('status', '==', 'pending')),
+  ];
+  const unsubs = queries.map((q, i) =>
+    onSnapshot(
+      q,
+      (snap) => {
+        parts[i] = new Map(snap.docs.map((d) => [d.id, { ...d.data(), id: d.id }]));
+        emit();
+      },
+      onError
+    )
+  );
+  return () => unsubs.forEach((u) => u());
+}
+
+/** 員工系統讀送貨單時要 id 喺資料入面，所以唔好刪走 id。 */
+export function saveDeliveryNote(note) {
+  const { db } = getFirebase();
+  return setDoc(doc(db, DELIVERY_NOTES, note.id), JSON.parse(JSON.stringify(note)));
+}
+
+export function deleteDeliveryNote(id) {
+  const { db } = getFirebase();
+  return deleteDoc(doc(db, DELIVERY_NOTES, id));
+}
+
 export async function loadDeliveryNotesFor(customerId) {
   const { db } = getFirebase();
   const snap = await getDocs(query(collection(db, DELIVERY_NOTES), where('customerId', '==', customerId)));

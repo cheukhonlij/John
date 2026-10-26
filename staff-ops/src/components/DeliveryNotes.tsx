@@ -114,6 +114,7 @@ export const DeliveryNotes: React.FC<DeliveryNotesProps> = ({
         status: 'pending',
       };
       onSaveNotes([...notes, created]);
+      setTab('pending');
       setViewingId(created.id);
     }
     setEditing(null);
@@ -145,7 +146,7 @@ export const DeliveryNotes: React.FC<DeliveryNotesProps> = ({
         note: '送貨單簽收',
         createdAt: signedAt,
       }))
-      .filter((m) => m.qty !== 0);
+      .filter((m) => m.itemId && m.qty !== 0);
     if (out.length) onSaveMovements([...movements, ...out]);
     setSigningId(null);
   };
@@ -160,10 +161,15 @@ export const DeliveryNotes: React.FC<DeliveryNotesProps> = ({
       )}
       {isManager && note.status === 'pending' && (
         <>
-          <button onClick={() => setEditing(note)} className={secondaryButtonClass}>
-            <Pencil className="w-4 h-4" />
-            {!compact && '編輯'}
-          </button>
+          {/* Notes opened in 開單台 list its products, so they are changed there. */}
+          {note.lines.some((l) => l.productId) ? (
+            !compact && <span className="text-xs font-bold text-slate-500 self-center">喺開單台開，要改請去開單台</span>
+          ) : (
+            <button onClick={() => setEditing(note)} className={secondaryButtonClass}>
+              <Pencil className="w-4 h-4" />
+              {!compact && '編輯'}
+            </button>
+          )}
           <button onClick={() => deleteNote(note)} className={secondaryButtonClass} title="刪除">
             <Trash2 className="w-4 h-4 text-rose-600" />
           </button>
