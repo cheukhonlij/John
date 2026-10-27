@@ -82,6 +82,10 @@ React 19 + TypeScript (strict) + Vite 6 + Tailwind CSS 4 + lucide-react, managed
   notes; deleting the invoice clears them. Cloud mode keeps notes from the last 62 days plus all pending
   ones live. 開單台 prints notes and makes their PDFs (`dnDocHTML`) through the same helpers as invoices
   (`printHTML`, `exportDocPDF`); neither app lets anyone edit a signed note.
+- 每日流程 (`src/components/DailyWorkflow.tsx`): from the `lg` breakpoint it is an hour × area grid
+  (area colours in `AREA_STYLES`); managers drag cards in 編排時間表 mode, moves wait until
+  儲存時間表 and change the recurring task itself (a moved task keeps its minutes). Below `lg` it is a
+  list grouped by hour with large tick boxes. The paper checklist is a separate print-only block.
 - Leave and labour-law logic is in `src/utils/leave.ts` (HK Employment Ordinance: annual leave
   7→14 days by service year, sick-day accrual capped at 120, continuous contract = 68 hours in
   4 weeks from 18 Jan 2026). Statutory holidays are listed for 2026–2027 in `defaults.ts`;
