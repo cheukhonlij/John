@@ -38,7 +38,9 @@ const state = {
   // 員工系統嗰邊：倉存貨品（產品配對用）、送貨客戶、匯入送貨單視窗
   stockItems:[], deliveryCustomers:[], dnImport:null,
   // 開單台開送貨單：最近嘅送貨單、正在開／改嗰張、產品表揀完加去邊
-  deliveryNotes:[], dnDraft:null, pickerFor:"invoice"
+  deliveryNotes:[], dnDraft:null, pickerFor:"invoice",
+  // 產品表剔咗邊樣、打咗幾多、搵緊咩：記喺度，畫面重畫都唔會冇咗
+  pickSel:{}, pickQ:""
 };
 
 /* ---------------- persistence：Firestore（只限老闆帳戶） ---------------- */
@@ -193,9 +195,18 @@ function outstandingFor(cid){
 
 /* ---------------- toast ---------------- */
 let toastTimer=null;
+/* 淨係更新提示條，唔重畫成頁：開住嘅視窗或者產品表入面剔咗、打咗嘅嘢唔會冇咗 */
+function paintToast(){
+  const host = $("#modalhost"); if(!host) return;
+  let el = host.querySelector(".bar-toast");
+  if(state.toast){
+    if(!el){ el = document.createElement("div"); el.className = "bar-toast"; host.appendChild(el); }
+    el.textContent = state.toast;
+  } else if(el) el.remove();
+}
 function toast(msg){
-  state.toast = msg; render();
-  clearTimeout(toastTimer); toastTimer = setTimeout(()=>{ state.toast=null; render(); }, 2600);
+  state.toast = msg; paintToast();
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>{ state.toast=null; paintToast(); }, 2600);
 }
 
 /* ---------------- render ---------------- */
@@ -211,10 +222,11 @@ function render(){
   }
   const scroll = window.scrollY;
   m.innerHTML = ({
-    new:viewNew, delivery:viewDelivery, invoices:viewInvoices, customers:viewCustomers,
+    new:viewNew, delivery:viewDelivery, invoices:viewInvoices, statement:viewStatement, customers:viewCustomers,
     items:viewItems, tickets:viewTickets, report:viewReport
   }[state.tab] || viewNew)();
   $("#modalhost").innerHTML = (state.modal ? state.modal() : "") + (state.toast ? '<div class="bar-toast">'+esc(state.toast)+'</div>' : "");
+  if(state.picker!=null) syncPick();
   if(state.tab==="report") drawChart();
   window.scrollTo(0,scroll);
 }
@@ -355,19 +367,20 @@ function pickerHTML(){
   return '<div class="scrim" data-act="picker-close"><div class="modal" style="max-width:580px" data-stop>'
   + '<header><h2>揀產品</h2><span class="hint" style="margin-left:10px">剔晒要嘅，再一次過加入'+(cu?'・價錢跟 '+esc(cu.name):'')+'</span><div class="spacer"></div><button class="btn sm ghost" data-act="picker-close" aria-label="關閉">✕</button></header>'
   + '<div class="body" style="padding:0;gap:0">'
-  + '<div style="padding:12px 16px;border-bottom:1px solid var(--line)"><input type="text" id="pickq" placeholder="搵產品名…（剔咗嘅會保留）" autocomplete="off"></div>'
+  + '<div style="padding:12px 16px;border-bottom:1px solid var(--line)"><input type="text" id="pickq" value="'+esc(state.pickQ)+'" placeholder="搵產品名…（剔咗嘅會保留）" autocomplete="off"></div>'
   + (state.items.length
     ? '<div class="plist" id="picklist">' + keys.map(g=>
-        '<div class="pgroup">'
+        '<div class="pgroup"'+(groups[g].some(it=>pickShows(it, g))?"":' style="display:none"')+'>'
         + '<label class="grp"><input type="checkbox" class="pgrp" aria-label="全選'+esc(g)+'"><span>'+esc(g)+'</span><span class="gc">'+groups[g].length+' 項・全選</span></label>'
         + groups[g].sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant")).map(it=>{
             const pr = priceFor(it.id, d.customerId, it.price);
             const special = Math.abs(pr - (Number(it.price)||0)) > 0.0001;
-            return '<label class="pi" data-name="'+esc((it.name+" "+g).toLowerCase())+'">'
-              + '<input type="checkbox" class="pchk" data-id="'+it.id+'">'
+            const picked = Object.prototype.hasOwnProperty.call(state.pickSel, it.id);
+            return '<label class="pi" data-name="'+esc((it.name+" "+g).toLowerCase())+'"'+(pickShows(it, g)?"":' style="display:none"')+'>'
+              + '<input type="checkbox" class="pchk" data-id="'+it.id+'" data-name="'+esc(it.name)+'" data-unit="'+esc(it.unit||"")+'" data-spec="'+esc(it.spec||"")+'" data-price="'+esc(it.price||0)+'"'+(picked?" checked":"")+'>'
               + '<span class="pn">'+esc(it.name)+(it.unit?' <span class="hint">/'+esc(it.unit)+'</span>':"")+'</span>'
               + '<span class="pp">'+money(pr)+(special?'<span class="chip acc">客戶價</span>':"")+'</span>'
-              + '<input type="number" class="num pq" data-id="'+it.id+'" min="0" step="1" placeholder="數量" aria-label="'+esc(it.name)+' 數量">'
+              + '<input type="number" class="num pq" data-id="'+it.id+'" value="'+esc(state.pickSel[it.id]||"")+'" min="0" step="1" placeholder="數量" aria-label="'+esc(it.name)+' 數量">'
               + '</label>';
           }).join("")
         + '</div>').join("") + '</div>'
@@ -376,6 +389,20 @@ function pickerHTML(){
   + '<footer class="pickfoot"><span class="hint" id="pickcount">未揀任何產品・打數量會自動剔埋</span>'
   +   '<div class="row"><button class="btn" data-act="picker-clear">全部取消</button><button class="btn pri" id="pickadd" data-act="picker-add" disabled>加入</button></div></footer>'
   + '</div></div>';
+}
+/* 揀咗嘅產品：通常喺產品表搵；啱啱有雲端更新搵唔到嘅話，用嗰一行記住嘅資料，唔會漏咗 */
+function pickedItem(chk){
+  const d = chk.dataset;
+  return state.items.find(x=>x.id===d.id) || { id:d.id, name:d.name||"", unit:d.unit||"", spec:d.spec||"", price:Number(d.price)||0 };
+}
+function keepPick(chk){
+  const id = chk.dataset.id;
+  if(chk.checked){ const q = chk.closest(".pi").querySelector(".pq"); state.pickSel[id] = q ? q.value : ""; }
+  else delete state.pickSel[id];
+}
+function pickShows(it, g){
+  const q = state.pickQ.trim().toLowerCase();
+  return !q || (it.name+" "+g).toLowerCase().includes(q);
 }
 function syncPick(){
   const list = $("#picklist"); if(!list) return;
@@ -456,6 +483,7 @@ function viewCustomers(){
         + '<td class="num" style="font-family:var(--mono);color:'+(owed>0.004?"var(--warn)":"var(--ink-3)")+'">'+(owed>0.004?money(owed):"—")+'</td>'
         + '<td class="num" style="font-family:var(--mono)">'+(tk?tk+" 張":"—")+'</td>'
         + '<td style="white-space:nowrap"><button class="btn sm ghost" data-act="cust-invoice" data-id="'+c.id+'">開單</button>'
+        + '<button class="btn sm ghost" data-act="cust-stmt" data-id="'+c.id+'">月結單</button>'
         + '<button class="btn sm ghost" data-act="cust-edit" data-id="'+c.id+'">修改</button>'
         + '<button class="btn sm ghost" data-act="cust-del" data-id="'+c.id+'">刪除</button></td></tr>';
       }).join("")
@@ -519,6 +547,123 @@ function viewTickets(){
     : '<div class="card"><div class="empty"><b>仲未有飯票套票</b>例如：$2,610 買 45 張送 5 張，共 50 個便當，過數當日起計一個月有效。</div></div>');
 }
 
+/* ================= 月結單（將未付清嘅單整合交俾客人，喺總數扣返已收貨款） ================= */
+function stmtState(){
+  // received：人手填嘅已收貨款，只喺月結單總數扣減，唔會改單據
+  if(!state.stmt) state.stmt = { customerId:"", asOf:todayISO(), excluded:{}, note:"", received:"", receivedNote:"" };
+  return state.stmt;
+}
+const round2 = n => Math.round((Number(n)||0)*100)/100;
+/* 呢個客戶截至某日仲未付清嘅單（唔計草稿），最舊排先 */
+function openInvoicesFor(cid, asOf){
+  return state.invoices.filter(v=>v.customerId===cid && statusOf(v)!=="draft" && (v.date||"")<=asOf && calc(v).due>0.004)
+    .sort((a,b)=>(a.date||"").localeCompare(b.date||"") || String(a.no||"").localeCompare(String(b.no||"")));
+}
+function stmtInvoices(st){ return openInvoicesFor(st.customerId, st.asOf).filter(v=>!st.excluded[v.id]); }
+/* 單據總額、單據本身記低嘅已收、人手填嘅已收貨款、尚欠（負數即係多收） */
+function stmtTotals(st){
+  let total=0, paid=0;
+  stmtInvoices(st).forEach(v=>{ const c=calc(v); total+=c.total; paid+=c.paid; });
+  const received = Math.max(0, round2(st.received));
+  return { total:round2(total), paid:round2(paid), received, balance:round2(total-paid-received) };
+}
+function stmtFilename(st){
+  const cu = customerById(st.customerId);
+  const cust = (cu?cu.name:"").replace(/[\s\/\\:*?"<>|（）()]+/g,"");
+  return "TFL Statement "+st.asOf+(cust?"_"+cust:"")+".pdf";
+}
+function stmtDocHTML(st){
+  const s = state.settings, cu = customerById(st.customerId) || {};
+  const list = stmtInvoices(st), t = stmtTotals(st);
+  const bizLines = [s.addrEn, s.addrZh, s.phone && ("Tel: "+s.phone), s.web].filter(Boolean);
+  const custLines = [cu.company, cu.addr, cu.contact && (cu.phone ? "Phone: "+cu.contact+" "+cu.phone : "Phone: "+cu.contact), (!cu.contact && cu.phone) ? "Phone: "+cu.phone : ""].filter(Boolean);
+  const pad = ' style="padding-right:10px"';
+  return '<div class="doc">'
+  + '<div class="dh"><div class="biz"><b>'+esc(s.brand||s.name||"Today\'s Food Lab")+'</b><small>'+bizLines.map(esc).join("<br>").replace(/\n/g,"<br>")+'</small></div>'
+  +   '<div class="dt"><b>Statement</b><span class="no">月結單</span>'
+  +     '<small>DATE　'+esc(fmtHK(st.asOf))+'<br>TERMS　'+esc(TERMS[String(cu.terms)]||"—")+'</small></div></div>'
+  + '<div class="parties"><div><em>Statement to</em><strong>'+esc(cu.name||"（未揀客戶）")+'</strong>'+(custLines.length?'<p>'+esc(custLines.join("\n"))+'</p>':"")+'</div></div>'
+  + '<div style="overflow-x:auto"><table><thead><tr><th'+pad+'>DATE</th><th'+pad+'>INVOICE NO.</th><th class="r"'+pad+'>AMOUNT</th><th class="r"'+pad+'>PAID</th><th class="r">BALANCE</th></tr></thead><tbody>'
+  + (list.length ? list.map(v=>{
+      const c = calc(v);
+      return '<tr><td'+pad+'>'+esc(fmtHK(v.date))+(v.dueDate?'<small>Due '+esc(fmtHK(v.dueDate))+'</small>':"")+'</td><td'+pad+'>'+esc(v.no||"—")+'</td>'
+      + '<td class="r"'+pad+'>'+money(c.total)+'</td><td class="r"'+pad+'>'+(c.paid>0.004?"−"+money(c.paid):"–")+'</td><td class="r">'+money(c.due)+'</td></tr>';
+    }).join("") : '<tr><td colspan="5">冇未付清嘅單據</td></tr>')
+  + '</tbody></table></div>'
+  + '<div class="sum"><table><tbody>'
+  +   '<tr><td>TOTAL INVOICED 單據總額</td><td class="r">'+money(t.total)+'</td></tr>'
+  +   (t.paid>0.004 ? '<tr><td>LESS PAID 單據已收</td><td class="r">−'+money(t.paid)+'</td></tr>' : "")
+  +   (t.received>0.004 ? '<tr><td>LESS RECEIVED 已收貨款'+(st.receivedNote?'<small>'+esc(st.receivedNote)+'</small>':"")+'</td><td class="r">−'+money(t.received)+'</td></tr>' : "")
+  +   (t.balance < -0.004
+      ? '<tr class="tot"><td>CREDIT 多收</td><td class="r">'+money(-t.balance)+'</td></tr>'
+      : '<tr class="tot"><td>BALANCE DUE 尚欠</td><td class="r">'+money(t.balance)+'</td></tr>')
+  + '</tbody></table></div>'
+  + '<div class="foot">'
+  +   '<div><em>Payment</em><p>'+esc(["Please make payment to "+(s.bank||""), s.fps && ("FPS: "+s.fps)].filter(Boolean).join("\n"))+'</p></div>'
+  +   '<div><em>Notes</em><p>'+esc([st.note, "如已付款，請忽略此月結單。"].filter(Boolean).join("\n"))+'</p></div>'
+  + '</div>'
+  + '</div>';
+}
+function stmtTotalsHTML(st){
+  const t = stmtTotals(st), n = stmtInvoices(st).length;
+  return '<div><span class="g">單據總額（'+n+' 張）</span><span class="n">'+money(t.total)+'</span></div>'
+    + (t.paid>0.004 ? '<div><span class="g">減：單據已收</span><span class="n">−'+money(t.paid)+'</span></div>' : "")
+    + (t.received>0.004 ? '<div><span class="g">減：已收貨款'+(st.receivedNote?"（"+esc(st.receivedNote)+"）":"")+'</span><span class="n">−'+money(t.received)+'</span></div>' : "")
+    + (t.balance < -0.004
+      ? '<div class="final"><span>多收</span><span>'+money(-t.balance)+'</span></div>'
+      : '<div class="final"><span>尚欠總額</span><span>'+money(t.balance)+'</span></div>');
+}
+/* 打字時淨係更新總數同預覽，唔重畫成頁 */
+function rerenderStmtPreview(){
+  const st = state.stmt; if(!st || !st.customerId) return;
+  const tot = $("#st_totals"); if(tot) tot.innerHTML = stmtTotalsHTML(st);
+  const box = document.querySelector("aside .doc");
+  if(box){ const tmp = document.createElement("div"); tmp.innerHTML = stmtDocHTML(st); box.replaceWith(tmp.firstElementChild); }
+}
+function viewStatement(){
+  const st = stmtState();
+  const cu = customerById(st.customerId);
+  const open = cu ? openInvoicesFor(st.customerId, st.asOf) : [];
+  const custs = state.customers.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant"));
+  return head("月結單", "揀客戶，將未付清嘅單整合成一張月結單交俾客人。客人畀咗部分貨款，就喺「已收貨款」填，會喺總數扣返。",
+      cu ? '<button class="btn" data-act="st-print">列印</button><button class="btn pri" data-act="st-pdf">下載 PDF</button>' : "")
+  + '<div class="editor wide-aside"><div style="display:flex;flex-direction:column;gap:16px">'
+  + '<section class="card"><header><h2>客戶同日期</h2></header><div class="body"><div class="grid2">'
+  +   '<label class="fld"><span class="lbl">客戶</span><select id="st_cust"><option value="">— 揀客戶 —</option>'
+  +     custs.map(c=>{ const o = outstandingFor(c.id); return '<option value="'+esc(c.id)+'"'+(c.id===st.customerId?" selected":"")+'>'+esc(c.name)+(o>0.004?" ・ 尚欠 "+money(o):"")+'</option>'; }).join("")
+  +   '</select></label>'
+  +   '<label class="fld"><span class="lbl">截至日期</span><input type="date" id="st_asof" value="'+esc(st.asOf)+'"></label>'
+  + '</div></div></section>'
+  + (!cu ? '<div class="card"><div class="empty"><b>揀一個客戶</b>就會列出佢未付清嘅單。</div></div>' :
+      '<section class="card"><header><h2>未付清嘅單據</h2><div class="spacer"></div><span class="hint">剔走嘅單唔會印喺月結單</span></header>'
+    + (open.length ? '<div class="tbl-wrap"><table class="stmt-tbl"><thead><tr><th style="width:30px"></th><th>單號</th><th>日期</th><th class="num">金額</th><th class="num">已付</th><th class="num">尚欠</th></tr></thead><tbody>'
+        + open.map(v=>{
+            const c = calc(v);
+            return '<tr><td><input type="checkbox" class="stchk" data-id="'+esc(v.id)+'"'+(st.excluded[v.id]?"":" checked")+' style="width:auto" aria-label="印 '+esc(v.no||"")+'"></td>'
+            + '<td style="font-family:var(--mono);white-space:nowrap">'+esc(v.no||"—")+'</td>'
+            + '<td style="white-space:nowrap">'+esc(fmtHK(v.date))+'<br><span class="hint">到期 '+esc(fmtHK(v.dueDate))+'</span>'+(statusOf(v)==="overdue"?' <span class="chip bad">逾期</span>':"")+'</td>'
+            + '<td class="num">'+money(c.total)+'</td><td class="num">'+(c.paid>0.004?money(c.paid):"—")+'</td><td class="num" style="color:var(--warn)">'+money(c.due)+'</td></tr>';
+          }).join("")
+        + '</tbody></table></div>'
+      : '<div class="empty"><b>截至呢日冇未付清嘅單</b>'+esc(cu.name)+' 所有單據都收齊。</div>')
+    + '<div class="body" style="border-top:1px solid var(--line);display:flex;flex-direction:column;gap:14px">'
+    +   '<div class="grid2">'
+    +     '<label class="fld"><span class="lbl">已收貨款 HKD（會喺總數扣返）</span><input type="number" step="0.01" min="0" class="num" id="st_recv" value="'+esc(st.received)+'" placeholder="0.00"></label>'
+    +     '<label class="fld"><span class="lbl">說明（選填，會印喺月結單）</span><input type="text" id="st_recvnote" value="'+esc(st.receivedNote)+'" placeholder="例如：5/11 FPS 轉數"></label>'
+    +   '</div>'
+    +   '<div class="hint">客人只畀咗部分貨款，就喺度填收到嘅數。呢行只係印喺月結單，唔會改單據入面嘅已收金額。</div>'
+    +   '<div class="totals" id="st_totals">'+stmtTotalsHTML(st)+'</div>'
+    + '</div>'
+    + '</section>'
+    + '<section class="card"><header><h2>月結單備註（選填）</h2></header><div class="body">'
+    +   '<textarea id="st_note" placeholder="例如：請於本月底前過數，多謝！">'+esc(st.note)+'</textarea></div></section>')
+  + '</div>'
+  + '<aside style="position:sticky;top:20px;display:flex;flex-direction:column;gap:14px">'
+  +   '<span class="lbl" style="margin:0">月結單預覽</span>'
+  +   (cu ? stmtDocHTML(st) : '<div class="doc"><p class="hint" style="margin:0">揀客戶之後會喺度顯示。</p></div>')
+  + '</aside></div>';
+}
+
 /* ================= 月結 ================= */
 function monthKeys(n){
   const out=[]; const d=new Date(); d.setDate(1);
@@ -541,7 +686,7 @@ function viewReport(){
   const months = monthKeys(12);
   const allMonths = Array.from(new Set(state.invoices.map(v=>monthOf(v.date)).filter(Boolean).concat([m]))).sort().reverse();
 
-  return head("月結", "睇單月生意額、收咗幾多同追緊幾多。",
+  return head("生意報表", "睇單月生意額、收咗幾多同追緊幾多。",
       '<select id="rmonth" style="width:auto">'+allMonths.map(x=>'<option value="'+x+'"'+(x===m?" selected":"")+'>'+x+'</option>').join("")+'</select>'
     + '<button class="btn sm" data-act="export-month">匯出當月 CSV</button>')
   + '<div class="grid3" style="margin-bottom:18px">'
@@ -1120,7 +1265,7 @@ document.addEventListener("click", async e=>{
     case "renumber": { const old=d.no; d.no = await nextNo(d.date); toast("單號由 "+old+" 改做 "+d.no); render(); return; }
     case "line-add": d.lines.push({id:uid("l"),name:"",spec:"",qty:1,price:0}); render(); return;
     case "line-del": if(d.lines.length>1) d.lines.splice(+i,1); else d.lines=[{id:uid("l"),name:"",spec:"",qty:1,price:0}]; render(); return;
-    case "pick-open": state.pickerFor = "invoice"; state.picker = +i; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
+    case "pick-open": state.pickerFor = "invoice"; state.pickSel = {}; state.pickQ = ""; state.picker = +i; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
     case "picker-add": {
       const list = $("#picklist"); if(!list) return;
       const rows = Array.from(list.querySelectorAll(".pchk:checked"));
@@ -1128,7 +1273,7 @@ document.addEventListener("click", async e=>{
       if(state.pickerFor==="delivery" && state.dnDraft){
         const dn = state.dnDraft;
         rows.forEach(chk=>{
-          const it = state.items.find(x=>x.id===chk.dataset.id); if(!it) return;
+          const it = pickedItem(chk);
           const q = chk.closest(".pi").querySelector(".pq");
           const qty = Number(q && q.value) > 0 ? Number(q.value) : 1;
           const same = dn.lines.find(l=>l.productId===it.id);
@@ -1139,7 +1284,7 @@ document.addEventListener("click", async e=>{
       }
       let added = 0;
       rows.forEach(chk=>{
-        const it = state.items.find(x=>x.id===chk.dataset.id); if(!it) return;
+        const it = pickedItem(chk);
         const q = chk.closest(".pi").querySelector(".pq");
         const qty = Number(q && q.value) > 0 ? Number(q.value) : 1;
         const line = {id:uid("l"), itemId:it.id, name:it.name, spec:it.spec||"", qty:qty, price:priceFor(it.id, d.customerId, it.price)};
@@ -1149,6 +1294,7 @@ document.addEventListener("click", async e=>{
       });
       state.picker=null; render(); toast("已加入 "+added+" 項"); return; }
     case "picker-clear": {
+      state.pickSel = {};
       document.querySelectorAll("#picklist .pchk, #picklist .pgrp").forEach(c=>{ c.checked=false; c.indeterminate=false; });
       document.querySelectorAll("#picklist .pq").forEach(q=>{ q.value=""; });
       syncPick(); return; }
@@ -1176,7 +1322,7 @@ document.addEventListener("click", async e=>{
         lines:(n.lines||[]).map(l=>({key:uid("l"), productId:l.productId||"", itemId:l.itemId||"", name:l.itemName, unit:l.unit||"", qty:l.qty})) };
       render(); toast("已複製 "+(n.no||"")+"，改好日期同數量再撳「開送貨單」"); return; }
     case "dn-line-del": state.dnDraft.lines.splice(+i,1); render(); return;
-    case "dn-pick-open": state.pickerFor = "delivery"; state.picker = 0; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
+    case "dn-pick-open": state.pickerFor = "delivery"; state.pickSel = {}; state.pickQ = ""; state.picker = 0; render(); setTimeout(()=>{const q=$("#pickq"); if(q) q.focus();},30); return;
     case "dn-save": {
       const dn = state.dnDraft; if(!dn) return;
       if(!dn.customerName.trim()){ toast("請揀客戶或者填客戶名稱"); return; }
@@ -1335,6 +1481,9 @@ document.addEventListener("click", async e=>{
       state.modal=null; await remove("customers", id);
       removeDeliveryCustomer(id).catch(saveFail);
       state.deliveryCustomers = state.deliveryCustomers.filter(x=>x.id!==id); return;
+    case "cust-stmt": { const st = stmtState(); st.customerId = id; st.excluded = {}; st.received = ""; st.receivedNote = ""; state.tab = "statement"; render(); return; }
+    case "st-pdf": { const st = stmtState(); if(!st.customerId) return; await exportDocPDF(stmtDocHTML(st), stmtFilename(st)); return; }
+    case "st-print": { const st = stmtState(); if(!st.customerId) return; printHTML(stmtDocHTML(st), stmtFilename(st).slice(0,-4)); return; }
     case "cust-invoice": state.draft = newDraft(); state.draft.customerId = id; applyCustomerDefaults(); state.tab="new"; render(); return;
 
     /* --- items --- */
@@ -1428,6 +1577,7 @@ document.addEventListener("input", e=>{
     return;
   }
   if(t.id==="pickq"){
+    state.pickQ = t.value;
     const q = t.value.trim().toLowerCase();
     document.querySelectorAll("#picklist .pi").forEach(r=>{ r.style.display = (!q || r.dataset.name.includes(q)) ? "" : "none"; });
     document.querySelectorAll("#picklist .pgroup").forEach(gp=>{
@@ -1439,8 +1589,12 @@ document.addEventListener("input", e=>{
   if(t.classList && t.classList.contains("pq")){
     const chk = t.closest(".pi").querySelector(".pchk");
     if(Number(t.value) > 0) chk.checked = true;
+    if(chk.checked) state.pickSel[t.dataset.id] = t.value;
     syncPick(); return;
   }
+  if(t.id==="st_note"){ stmtState().note = t.value; rerenderStmtPreview(); return; }
+  if(t.id==="st_recv"){ stmtState().received = t.value; rerenderStmtPreview(); return; }
+  if(t.id==="st_recvnote"){ stmtState().receivedNote = t.value; rerenderStmtPreview(); return; }
   if(t.dataset.dn && state.dnDraft){
     const dn = state.dnDraft, f = t.dataset.dn;
     dn[f] = t.value;
@@ -1474,13 +1628,16 @@ document.addEventListener("input", e=>{
 document.addEventListener("change", e=>{
   const t = e.target;
   if(t.classList && t.classList.contains("pgrp")){
-    t.closest(".pgroup").querySelectorAll(".pi").forEach(r=>{ if(r.style.display!=="none") r.querySelector(".pchk").checked = t.checked; });
+    t.closest(".pgroup").querySelectorAll(".pi").forEach(r=>{ if(r.style.display!=="none"){ const c = r.querySelector(".pchk"); c.checked = t.checked; keepPick(c); } });
     syncPick(); return;
   }
-  if(t.classList && t.classList.contains("pchk")){ syncPick(); return; }
+  if(t.classList && t.classList.contains("pchk")){ keepPick(t); syncPick(); return; }
   if(t.dataset.f==="no"){ render(); return; }
   if(t.dataset.fi){ state.invFilter[t.dataset.fi] = t.value; render(); return; }
   if(t.id==="rmonth"){ state.reportMonth = t.value; render(); return; }
+  if(t.id==="st_cust"){ const st = stmtState(); st.customerId = t.value; st.excluded = {}; st.received = ""; st.receivedNote = ""; render(); return; }
+  if(t.id==="st_asof"){ stmtState().asOf = t.value || todayISO(); render(); return; }
+  if(t.classList && t.classList.contains("stchk")){ const st = stmtState(); st.excluded[t.dataset.id] = !t.checked; render(); return; }
   if(t.id==="dn_month" && state.dnImport){ state.dnImport.month = t.value; render(); return; }
   if(t.id==="dn_cust" && state.dnImport){ openDeliveryImport(t.value); return; }
   if(t.dataset.l==="name" && state.draft){
@@ -1508,7 +1665,7 @@ document.addEventListener("keydown", e=>{
   if(e.key==="Escape" && (state.modal||state.picker!=null)){ state.modal=null; state.picker=null; render(); }
   if(e.altKey||e.ctrlKey||e.metaKey||state.gate!=="owner") return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-  const map = {n:"new",d:"delivery",i:"invoices",c:"customers",p:"items",t:"tickets",r:"report"};
+  const map = {n:"new",d:"delivery",i:"invoices",s:"statement",c:"customers",p:"items",t:"tickets",r:"report"};
   const k = map[e.key.toLowerCase()];
   if(k){ state.tab=k; render(); }
 });
