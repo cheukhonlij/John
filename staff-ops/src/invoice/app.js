@@ -1,7 +1,7 @@
 // 開單台（只限老闆）— 由 invoice.html 載入。
 // 資料喺 Firestore（見 ./store.js），保安由 firestore.rules 嘅 isOwner() 把關。
 import {
-  cloudEnabled, watchOwner, subscribeAll, putRecord, putRecords, removeRecord,
+  cloudEnabled, watchOwner, subscribeAll, putRecord, removeRecord,
   putSettings as cloudPutSettings, nextSequence, importBackup, exportBackup,
   syncDeliveryCustomer, removeDeliveryCustomer, syncAllDeliveryCustomers, loadDeliveryCustomers,
   loadStockItems, loadDeliveryNotesFor, markDeliveryNotes, unmarkDeliveryNotes, flushWrites,
@@ -67,11 +67,6 @@ async function put(col,id,data){
   const clean = JSON.parse(JSON.stringify(data)); delete clean.id;
   localSet(col,id,clean);
   putRecord(col, id, clean).catch(saveFail);
-  render();
-}
-function putMany(col, records){
-  const list = records.map(({id, data})=>{ const clean = JSON.parse(JSON.stringify(data)); delete clean.id; localSet(col,id,clean); return {id, data:clean}; });
-  putRecords(col, list).catch(saveFail);
   render();
 }
 async function remove(col,id){
@@ -382,7 +377,7 @@ function pickerHTML(){
             const special = Math.abs(pr - (Number(it.price)||0)) > 0.0001;
             const picked = Object.prototype.hasOwnProperty.call(state.pickSel, it.id);
             return '<label class="pi" data-name="'+esc((it.name+" "+g).toLowerCase())+'"'+(pickShows(it, g)?"":' style="display:none"')+'>'
-              + '<input type="checkbox" class="pchk" data-id="'+it.id+'"'+(picked?" checked":"")+'>'
+              + '<input type="checkbox" class="pchk" data-id="'+it.id+'" data-name="'+esc(it.name)+'" data-unit="'+esc(it.unit||"")+'" data-spec="'+esc(it.spec||"")+'" data-price="'+esc(it.price||0)+'"'+(picked?" checked":"")+'>'
               + '<span class="pn">'+esc(it.name)+(it.unit?' <span class="hint">/'+esc(it.unit)+'</span>':"")+'</span>'
               + '<span class="pp">'+money(pr)+(special?'<span class="chip acc">客戶價</span>':"")+'</span>'
               + '<input type="number" class="num pq" data-id="'+it.id+'" value="'+esc(state.pickSel[it.id]||"")+'" min="0" step="1" placeholder="數量" aria-label="'+esc(it.name)+' 數量">'
@@ -394,6 +389,11 @@ function pickerHTML(){
   + '<footer class="pickfoot"><span class="hint" id="pickcount">未揀任何產品・打數量會自動剔埋</span>'
   +   '<div class="row"><button class="btn" data-act="picker-clear">全部取消</button><button class="btn pri" id="pickadd" data-act="picker-add" disabled>加入</button></div></footer>'
   + '</div></div>';
+}
+/* 揀咗嘅產品：通常喺產品表搵；啱啱有雲端更新搵唔到嘅話，用嗰一行記住嘅資料，唔會漏咗 */
+function pickedItem(chk){
+  const d = chk.dataset;
+  return state.items.find(x=>x.id===d.id) || { id:d.id, name:d.name||"", unit:d.unit||"", spec:d.spec||"", price:Number(d.price)||0 };
 }
 function keepPick(chk){
   const id = chk.dataset.id;
@@ -547,13 +547,12 @@ function viewTickets(){
     : '<div class="card"><div class="empty"><b>仲未有飯票套票</b>例如：$2,610 買 45 張送 5 張，共 50 個便當，過數當日起計一個月有效。</div></div>');
 }
 
-/* ================= 月結單（將未付清嘅單整合交俾客人，可以扣除部分付款） ================= */
+/* ================= 月結單（將未付清嘅單整合交俾客人，喺總數扣返已收貨款） ================= */
 function stmtState(){
-  // alloc：每張單今次收幾多（人手填，或者由收款總額自動分配）；pay：收款表格
-  if(!state.stmt) state.stmt = { customerId:"", asOf:todayISO(), excluded:{}, note:"", alloc:{}, pay:newPay(), payLeft:0 };
+  // received：人手填嘅已收貨款，只喺月結單總數扣減，唔會改單據
+  if(!state.stmt) state.stmt = { customerId:"", asOf:todayISO(), excluded:{}, note:"", received:"", receivedNote:"" };
   return state.stmt;
 }
-function newPay(){ return { date:todayISO(), amt:"", method:METHODS[0], ref:"" }; }
 const round2 = n => Math.round((Number(n)||0)*100)/100;
 /* 呢個客戶截至某日仲未付清嘅單（唔計草稿），最舊排先 */
 function openInvoicesFor(cid, asOf){
@@ -561,34 +560,12 @@ function openInvoicesFor(cid, asOf){
     .sort((a,b)=>(a.date||"").localeCompare(b.date||"") || String(a.no||"").localeCompare(String(b.no||"")));
 }
 function stmtInvoices(st){ return openInvoicesFor(st.customerId, st.asOf).filter(v=>!st.excluded[v.id]); }
-/* 收款紀錄：喺月結單記錄嘅收款有 payments；之前喺單據直接填「已收金額」嘅當一筆 */
-function paymentsOf(v){
-  if(Array.isArray(v.payments) && v.payments.length) return v.payments;
-  const paid = calc(v).paid;
-  return paid>0.004 ? [{date:v.paidDate||"", amount:paid, method:v.method||"", ref:""}] : [];
-}
-function stmtTotals(list){
+/* 單據總額、單據本身記低嘅已收、人手填嘅已收貨款、尚欠（負數即係多收） */
+function stmtTotals(st){
   let total=0, paid=0;
-  list.forEach(v=>{ const c=calc(v); total+=c.total; paid+=c.paid; });
-  return { total:round2(total), paid:round2(paid), due:round2(total-paid) };
-}
-function agingOf(list, asOf){
-  const b = {cur:0, d30:0, d60:0, d90:0};
-  list.forEach(v=>{
-    const due = calc(v).due, late = v.dueDate ? daysBetween(v.dueDate, asOf) : 0;
-    if(late<=0) b.cur+=due; else if(late<=30) b.d30+=due; else if(late<=60) b.d60+=due; else b.d90+=due;
-  });
-  return b;
-}
-/* 收款由最舊嘅單扣起 */
-function allocatePayment(list, amount){
-  let left = round2(amount); const parts = [];
-  list.forEach(v=>{
-    if(left<=0.004) return;
-    const pay = round2(Math.min(calc(v).due, left));
-    if(pay>0.004){ parts.push({inv:v, amount:pay}); left = round2(left-pay); }
-  });
-  return { parts, left };
+  stmtInvoices(st).forEach(v=>{ const c=calc(v); total+=c.total; paid+=c.paid; });
+  const received = Math.max(0, round2(st.received));
+  return { total:round2(total), paid:round2(paid), received, balance:round2(total-paid-received) };
 }
 function stmtFilename(st){
   const cu = customerById(st.customerId);
@@ -597,12 +574,9 @@ function stmtFilename(st){
 }
 function stmtDocHTML(st){
   const s = state.settings, cu = customerById(st.customerId) || {};
-  const list = stmtInvoices(st), t = stmtTotals(list), ag = agingOf(list, st.asOf);
+  const list = stmtInvoices(st), t = stmtTotals(st);
   const bizLines = [s.addrEn, s.addrZh, s.phone && ("Tel: "+s.phone), s.web].filter(Boolean);
   const custLines = [cu.company, cu.addr, cu.contact && (cu.phone ? "Phone: "+cu.contact+" "+cu.phone : "Phone: "+cu.contact), (!cu.contact && cu.phone) ? "Phone: "+cu.phone : ""].filter(Boolean);
-  const pays = [];
-  list.forEach(v=>paymentsOf(v).forEach(p=>pays.push(Object.assign({no:v.no}, p))));
-  pays.sort((a,b)=>(a.date||"").localeCompare(b.date||""));
   const pad = ' style="padding-right:10px"';
   return '<div class="doc">'
   + '<div class="dh"><div class="biz"><b>'+esc(s.brand||s.name||"Today\'s Food Lab")+'</b><small>'+bizLines.map(esc).join("<br>").replace(/\n/g,"<br>")+'</small></div>'
@@ -618,51 +592,40 @@ function stmtDocHTML(st){
   + '</tbody></table></div>'
   + '<div class="sum"><table><tbody>'
   +   '<tr><td>TOTAL INVOICED 單據總額</td><td class="r">'+money(t.total)+'</td></tr>'
-  +   '<tr><td>LESS PAYMENTS 已收款項</td><td class="r">−'+money(t.paid)+'</td></tr>'
-  +   '<tr class="tot"><td>BALANCE DUE 尚欠</td><td class="r">'+money(t.due)+'</td></tr>'
+  +   (t.paid>0.004 ? '<tr><td>LESS PAID 單據已收</td><td class="r">−'+money(t.paid)+'</td></tr>' : "")
+  +   (t.received>0.004 ? '<tr><td>LESS RECEIVED 已收貨款'+(st.receivedNote?'<small>'+esc(st.receivedNote)+'</small>':"")+'</td><td class="r">−'+money(t.received)+'</td></tr>' : "")
+  +   (t.balance < -0.004
+      ? '<tr class="tot"><td>CREDIT 多收</td><td class="r">'+money(-t.balance)+'</td></tr>'
+      : '<tr class="tot"><td>BALANCE DUE 尚欠</td><td class="r">'+money(t.balance)+'</td></tr>')
   + '</tbody></table></div>'
-  + (pays.length ? '<div class="foot"><div><em>Payments received 收款紀錄</em><p>'
-      + esc(pays.map(p=>[fmtHK(p.date), p.no, p.method, p.ref, money(p.amount)].filter(x=>x && x!=="—").join("　")).join("\n"))+'</p></div></div>' : "")
   + '<div class="foot">'
-  +   '<div><em>Ageing 賬齡</em><p>'+esc("未到期　"+money(ag.cur)+"\n逾期 1–30 日　"+money(ag.d30)+"\n逾期 31–60 日　"+money(ag.d60)+"\n逾期 60 日以上　"+money(ag.d90))+'</p></div>'
   +   '<div><em>Payment</em><p>'+esc(["Please make payment to "+(s.bank||""), s.fps && ("FPS: "+s.fps)].filter(Boolean).join("\n"))+'</p></div>'
+  +   '<div><em>Notes</em><p>'+esc([st.note, "如已付款，請忽略此月結單。"].filter(Boolean).join("\n"))+'</p></div>'
   + '</div>'
-  + '<div class="foot"><div><em>Notes</em><p>'+esc([st.note, "如已付款，請忽略此月結單。"].filter(Boolean).join("\n"))+'</p></div></div>'
   + '</div>';
 }
+function stmtTotalsHTML(st){
+  const t = stmtTotals(st), n = stmtInvoices(st).length;
+  return '<div><span class="g">單據總額（'+n+' 張）</span><span class="n">'+money(t.total)+'</span></div>'
+    + (t.paid>0.004 ? '<div><span class="g">減：單據已收</span><span class="n">−'+money(t.paid)+'</span></div>' : "")
+    + (t.received>0.004 ? '<div><span class="g">減：已收貨款'+(st.receivedNote?"（"+esc(st.receivedNote)+"）":"")+'</span><span class="n">−'+money(t.received)+'</span></div>' : "")
+    + (t.balance < -0.004
+      ? '<div class="final"><span>多收</span><span>'+money(-t.balance)+'</span></div>'
+      : '<div class="final"><span>尚欠總額</span><span>'+money(t.balance)+'</span></div>');
+}
+/* 打字時淨係更新總數同預覽，唔重畫成頁 */
 function rerenderStmtPreview(){
+  const st = state.stmt; if(!st || !st.customerId) return;
+  const tot = $("#st_totals"); if(tot) tot.innerHTML = stmtTotalsHTML(st);
   const box = document.querySelector("aside .doc");
-  if(box && state.stmt && state.stmt.customerId){ const tmp = document.createElement("div"); tmp.innerHTML = stmtDocHTML(state.stmt); box.replaceWith(tmp.firstElementChild); }
-}
-/* 今次收款合共幾多、有冇填多過嗰張單欠嘅數 */
-function allocSummary(st){
-  const list = stmtInvoices(st);
-  let total = 0, count = 0; const over = [];
-  list.forEach(v=>{
-    const a = round2(st.alloc[v.id]);
-    if(a>0){ total += a; count++; if(a > calc(v).due + 0.004) over.push((v.no||"")+" 只欠 "+money(calc(v).due)); }
-  });
-  if(!count) return "";
-  return "今次合共收 "+money(round2(total))+"（"+count+" 張單）"
-    + (st.payLeft>0.004 ? "；收款總額多出 "+money(st.payLeft)+" 冇單可以扣" : "")
-    + (over.length ? "；留意："+over.join("、") : "");
-}
-function paintAlloc(){
-  const st = state.stmt; if(!st) return;
-  document.querySelectorAll(".pmalloc").forEach(el=>{ if(el !== document.activeElement) el.value = st.alloc[el.dataset.id] || ""; });
-  const el = $("#pm_preview"); if(el) el.textContent = allocSummary(st);
+  if(box){ const tmp = document.createElement("div"); tmp.innerHTML = stmtDocHTML(st); box.replaceWith(tmp.firstElementChild); }
 }
 function viewStatement(){
   const st = stmtState();
   const cu = customerById(st.customerId);
   const open = cu ? openInvoicesFor(st.customerId, st.asOf) : [];
-  const list = open.filter(v=>!st.excluded[v.id]);
-  const t = stmtTotals(list);
   const custs = state.customers.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","zh-Hant"));
-  const pays = [];
-  list.forEach(v=>paymentsOf(v).forEach(p=>pays.push(Object.assign({no:v.no}, p))));
-  pays.sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-  return head("月結單", "揀客戶，將未付清嘅單整合成一張月結單交俾客人。客人畀咗部分款項，就喺下面記錄，系統會由最舊嘅單扣起。",
+  return head("月結單", "揀客戶，將未付清嘅單整合成一張月結單交俾客人。客人畀咗部分貨款，就喺「已收貨款」填，會喺總數扣返。",
       cu ? '<button class="btn" data-act="st-print">列印</button><button class="btn pri" data-act="st-pdf">下載 PDF</button>' : "")
   + '<div class="editor wide-aside"><div style="display:flex;flex-direction:column;gap:16px">'
   + '<section class="card"><header><h2>客戶同日期</h2></header><div class="body"><div class="grid2">'
@@ -682,33 +645,16 @@ function viewStatement(){
             + '<td class="num">'+money(c.total)+'</td><td class="num">'+(c.paid>0.004?money(c.paid):"—")+'</td><td class="num" style="color:var(--warn)">'+money(c.due)+'</td></tr>';
           }).join("")
         + '</tbody></table></div>'
-        + '<div class="body" style="border-top:1px solid var(--line)"><div class="totals">'
-        +   '<div><span class="g">單據總額（'+list.length+' 張）</span><span class="n">'+money(t.total)+'</span></div>'
-        +   '<div><span class="g">減：已收款項</span><span class="n">−'+money(t.paid)+'</span></div>'
-        +   '<div class="final"><span>尚欠總額</span><span>'+money(t.due)+'</span></div>'
-        + '</div></div>'
       : '<div class="empty"><b>截至呢日冇未付清嘅單</b>'+esc(cu.name)+' 所有單據都收齊。</div>')
-    + '</section>'
-    + '<section class="card"><header><h2>記錄收款（扣除部分付款）</h2></header><div class="body" style="display:flex;flex-direction:column;gap:12px">'
-    +   '<div class="hint">喺每張單嘅「今次收款」填客人實際畀咗幾多，只畀部分貨款就填實收嘅數。唔想逐張填，可以喺「收款總額」填總數，系統會由最舊嘅單扣起幫你填好，你再逐張改。扣咗嘅單會更新「已收」，月結單上面會顯示為扣除。</div>'
+    + '<div class="body" style="border-top:1px solid var(--line);display:flex;flex-direction:column;gap:14px">'
     +   '<div class="grid2">'
-    +     '<label class="fld"><span class="lbl">收款日期</span><input type="date" id="pm_date" value="'+esc(st.pay.date)+'"></label>'
-    +     '<label class="fld"><span class="lbl">收款方式</span><select id="pm_method">'+METHODS.map(m=>'<option'+(m===st.pay.method?" selected":"")+'>'+esc(m)+'</option>').join("")+'</select></label>'
-    +     '<label class="fld"><span class="lbl">參考編號／備註（選填）</span><input type="text" id="pm_ref" value="'+esc(st.pay.ref)+'" placeholder="例如：FPS 參考號"></label>'
-    +     '<label class="fld"><span class="lbl">收款總額（選填，自動由最舊嘅單扣起）</span><input type="number" step="0.01" min="0" class="num" id="pm_amt" value="'+esc(st.pay.amt)+'" placeholder="0.00"></label>'
+    +     '<label class="fld"><span class="lbl">已收貨款 HKD（會喺總數扣返）</span><input type="number" step="0.01" min="0" class="num" id="st_recv" value="'+esc(st.received)+'" placeholder="0.00"></label>'
+    +     '<label class="fld"><span class="lbl">說明（選填，會印喺月結單）</span><input type="text" id="st_recvnote" value="'+esc(st.receivedNote)+'" placeholder="例如：5/11 FPS 轉數"></label>'
     +   '</div>'
-    +   (list.length ? '<div class="tbl-wrap"><table class="stmt-tbl"><thead><tr><th>單號</th><th class="num">尚欠</th><th class="num" style="width:150px">今次收款 HKD</th></tr></thead><tbody>'
-          + list.map(v=>'<tr><td style="font-family:var(--mono);white-space:nowrap">'+esc(v.no||"—")+'<br><span class="hint" style="font-family:var(--ui)">'+esc(fmtHK(v.date))+'</span></td>'
-            + '<td class="num">'+money(calc(v).due)+'</td>'
-            + '<td><input type="number" step="0.01" min="0" class="num pmalloc" data-id="'+esc(v.id)+'" value="'+esc(st.alloc[v.id]||"")+'" placeholder="0.00" aria-label="'+esc(v.no||"")+' 今次收款"></td></tr>').join("")
-          + '</tbody></table></div>' : "")
-    +   '<div id="pm_preview" class="hint" style="color:var(--accent)">'+esc(allocSummary(st))+'</div>'
-    +   '<div class="row"><button class="btn pri" data-act="pm-save"'+(list.length?"":" disabled")+'>記錄收款並扣數</button>'
-    +     '<button class="btn ghost" data-act="pm-clear">清空收款</button></div>'
-    +   (pays.length ? '<div><div class="lbl">已收款項（會印喺月結單）</div><div class="tbl-wrap"><table><tbody>'
-          + pays.map(p=>'<tr><td class="hint" style="white-space:nowrap">'+esc(fmtHK(p.date))+'</td><td style="font-family:var(--mono)">'+esc(p.no||"")+'</td><td class="hint">'+esc([p.method, p.ref].filter(Boolean).join(" ・ "))+'</td><td class="num">'+money(p.amount)+'</td></tr>').join("")
-          + '</tbody></table></div></div>' : "")
-    + '</div></section>'
+    +   '<div class="hint">客人只畀咗部分貨款，就喺度填收到嘅數。呢行只係印喺月結單，唔會改單據入面嘅已收金額。</div>'
+    +   '<div class="totals" id="st_totals">'+stmtTotalsHTML(st)+'</div>'
+    + '</div>'
+    + '</section>'
     + '<section class="card"><header><h2>月結單備註（選填）</h2></header><div class="body">'
     +   '<textarea id="st_note" placeholder="例如：請於本月底前過數，多謝！">'+esc(st.note)+'</textarea></div></section>')
   + '</div>'
@@ -1327,7 +1273,7 @@ document.addEventListener("click", async e=>{
       if(state.pickerFor==="delivery" && state.dnDraft){
         const dn = state.dnDraft;
         rows.forEach(chk=>{
-          const it = state.items.find(x=>x.id===chk.dataset.id); if(!it) return;
+          const it = pickedItem(chk);
           const q = chk.closest(".pi").querySelector(".pq");
           const qty = Number(q && q.value) > 0 ? Number(q.value) : 1;
           const same = dn.lines.find(l=>l.productId===it.id);
@@ -1338,7 +1284,7 @@ document.addEventListener("click", async e=>{
       }
       let added = 0;
       rows.forEach(chk=>{
-        const it = state.items.find(x=>x.id===chk.dataset.id); if(!it) return;
+        const it = pickedItem(chk);
         const q = chk.closest(".pi").querySelector(".pq");
         const qty = Number(q && q.value) > 0 ? Number(q.value) : 1;
         const line = {id:uid("l"), itemId:it.id, name:it.name, spec:it.spec||"", qty:qty, price:priceFor(it.id, d.customerId, it.price)};
@@ -1535,31 +1481,9 @@ document.addEventListener("click", async e=>{
       state.modal=null; await remove("customers", id);
       removeDeliveryCustomer(id).catch(saveFail);
       state.deliveryCustomers = state.deliveryCustomers.filter(x=>x.id!==id); return;
-    case "cust-stmt": { const st = stmtState(); st.customerId = id; st.excluded = {}; st.alloc = {}; st.pay.amt = ""; st.payLeft = 0; state.tab = "statement"; render(); return; }
+    case "cust-stmt": { const st = stmtState(); st.customerId = id; st.excluded = {}; st.received = ""; st.receivedNote = ""; state.tab = "statement"; render(); return; }
     case "st-pdf": { const st = stmtState(); if(!st.customerId) return; await exportDocPDF(stmtDocHTML(st), stmtFilename(st)); return; }
     case "st-print": { const st = stmtState(); if(!st.customerId) return; printHTML(stmtDocHTML(st), stmtFilename(st).slice(0,-4)); return; }
-    case "pm-clear": { const st = stmtState(); st.alloc = {}; st.pay.amt = ""; st.payLeft = 0; render(); return; }
-    case "pm-save": {
-      const st = stmtState();
-      const parts = [], over = [];
-      stmtInvoices(st).forEach(v=>{
-        const a = round2(st.alloc[v.id]);
-        if(a<=0) return;
-        if(a > calc(v).due + 0.004) over.push(v); else parts.push({inv:v, amount:a});
-      });
-      if(over.length){ toast(over.map(v=>(v.no||"")+" 只欠 "+money(calc(v).due)).join("、")+"，請改細今次收款"); return; }
-      if(!parts.length){ toast("請喺「今次收款」填金額，或者填收款總額"); return; }
-      const date = st.pay.date || todayISO(), method = st.pay.method || METHODS[0], ref = (st.pay.ref||"").trim();
-      const left = st.payLeft, amount = round2(parts.reduce((a,p)=>a+p.amount,0) + (left>0.004 ? left : 0));
-      const pid = uid("pay");
-      putMany("invoices", parts.map(part=>{
-        const v = part.inv;
-        const payments = paymentsOf(v).map(x=>Object.assign({}, x)).concat([{id:pid, date, amount:part.amount, method, ref}]);
-        return { id:v.id, data:Object.assign({}, v, {paid: round2(calc(v).paid + part.amount), paidDate: date, method, payments}) };
-      }));
-      toast("已記錄收款 "+money(round2(amount-left))+"，扣咗 "+parts.length+" 張單"+(left>0.004 ? "；多出 "+money(left)+" 冇單可以扣" : ""));
-      st.alloc = {}; st.pay = Object.assign(newPay(), {date, method}); st.payLeft = 0;
-      render(); return; }
     case "cust-invoice": state.draft = newDraft(); state.draft.customerId = id; applyCustomerDefaults(); state.tab="new"; render(); return;
 
     /* --- items --- */
@@ -1669,19 +1593,8 @@ document.addEventListener("input", e=>{
     syncPick(); return;
   }
   if(t.id==="st_note"){ stmtState().note = t.value; rerenderStmtPreview(); return; }
-  if(/^pm_(date|method|ref)$/.test(t.id)){ stmtState().pay[t.id.slice(3)] = t.value; return; }
-  if(t.id==="pm_amt"){
-    // 收款總額：由最舊嘅單扣起，填入每張單嘅「今次收款」，之後仲可以逐張改
-    const st = stmtState(); st.pay.amt = t.value; st.alloc = {};
-    const { parts, left } = allocatePayment(stmtInvoices(st), round2(t.value));
-    parts.forEach(p=>{ st.alloc[p.inv.id] = String(p.amount); });
-    st.payLeft = round2(t.value) > 0 ? left : 0;
-    paintAlloc(); return;
-  }
-  if(t.classList && t.classList.contains("pmalloc")){
-    const st = stmtState(); st.alloc[t.dataset.id] = t.value; st.payLeft = 0;
-    paintAlloc(); return;
-  }
+  if(t.id==="st_recv"){ stmtState().received = t.value; rerenderStmtPreview(); return; }
+  if(t.id==="st_recvnote"){ stmtState().receivedNote = t.value; rerenderStmtPreview(); return; }
   if(t.dataset.dn && state.dnDraft){
     const dn = state.dnDraft, f = t.dataset.dn;
     dn[f] = t.value;
@@ -1722,8 +1635,7 @@ document.addEventListener("change", e=>{
   if(t.dataset.f==="no"){ render(); return; }
   if(t.dataset.fi){ state.invFilter[t.dataset.fi] = t.value; render(); return; }
   if(t.id==="rmonth"){ state.reportMonth = t.value; render(); return; }
-  if(t.id==="st_cust"){ const st = stmtState(); st.customerId = t.value; st.excluded = {}; st.alloc = {}; st.pay.amt = ""; st.payLeft = 0; render(); return; }
-  if(/^pm_(date|method|ref)$/.test(t.id)){ stmtState().pay[t.id.slice(3)] = t.value; return; }
+  if(t.id==="st_cust"){ const st = stmtState(); st.customerId = t.value; st.excluded = {}; st.received = ""; st.receivedNote = ""; render(); return; }
   if(t.id==="st_asof"){ stmtState().asOf = t.value || todayISO(); render(); return; }
   if(t.classList && t.classList.contains("stchk")){ const st = stmtState(); st.excluded[t.dataset.id] = !t.checked; render(); return; }
   if(t.id==="dn_month" && state.dnImport){ state.dnImport.month = t.value; render(); return; }

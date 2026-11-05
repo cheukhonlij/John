@@ -87,12 +87,12 @@ React 19 + TypeScript (strict) + Vite 6 + Tailwind CSS 4 + lucide-react, managed
   儲存時間表 and change the recurring task itself (a moved task keeps its minutes). Below `lg` it is a
   list grouped by hour with large tick boxes. The paper checklist is a separate print-only block.
 - 開單台 → 月結單 (`viewStatement`, `stmtDocHTML`) lists a customer's unpaid issued invoices up to a
-  date. 記錄收款 takes a 今次收款 amount per invoice (`state.stmt.alloc`: typed by hand, or filled
-  oldest-first from 收款總額), refuses more than an invoice owes, and writes the affected invoices in one
-  batch (`putRecords`): each gets `paid` increased and the payment appended to an optional `payments` array
-  (older invoices only have `paid`/`paidDate`/`method`, shown as one payment). The product picker keeps
+  date. 已收貨款 is one amount typed on the statement (`state.stmt.received`, with an optional note) and
+  only comes off the statement's total; it does not change any invoice. Invoices' own `paid` amounts
+  still show as 單據已收. Nothing about a statement is saved. The product picker keeps
   its ticks and quantities in `state.pickSel`, and toasts repaint only their own element, so a redraw
-  never clears what the owner was picking or typing.
+  never clears what the owner was picking or typing. Each picker row also carries the product's name,
+  unit, spec and price (`pickedItem`), so 加入 still adds it if a sync has just replaced `state.items`.
 - Leave and labour-law logic is in `src/utils/leave.ts` (HK Employment Ordinance: annual leave
   7→14 days by service year, sick-day accrual capped at 120, continuous contract = 68 hours in
   4 weeks from 18 Jan 2026). Statutory holidays are listed for 2026–2027 in `defaults.ts`;

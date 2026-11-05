@@ -101,14 +101,6 @@ export function putRecord(kind, id, data) {
   return setDoc(doc(db, INV_COLLECTIONS[kind], id), clean(data));
 }
 
-/** 幾張記錄一齊寫（例如一筆收款扣幾張單），畫面只會更新一次。 */
-export function putRecords(kind, records) {
-  const { db } = getFirebase();
-  const batch = writeBatch(db);
-  records.forEach(({ id, data }) => batch.set(doc(db, INV_COLLECTIONS[kind], id), clean(data)));
-  return batch.commit();
-}
-
 export function removeRecord(kind, id) {
   const { db } = getFirebase();
   return deleteDoc(doc(db, INV_COLLECTIONS[kind], id));
