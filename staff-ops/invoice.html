@@ -182,7 +182,9 @@ tbody tr:last-child td{border-bottom:0}
 
 /* ---------- editor ---------- */
 .editor{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:20px;align-items:start}
-@media (max-width:1180px){.editor{grid-template-columns:1fr}}
+.editor.wide-aside{grid-template-columns:minmax(0,1fr) 480px}
+.stmt-tbl th,.stmt-tbl td{padding-left:8px;padding-right:8px}
+@media (max-width:1180px){.editor,.editor.wide-aside{grid-template-columns:1fr}}
 .lines th:nth-child(1){width:auto}
 .lines input{border-color:transparent;background:transparent;padding:4px 6px}
 .lines input:hover{border-color:var(--line)}
@@ -283,10 +285,11 @@ tbody tr:last-child td{border-bottom:0}
     <button class="navbtn" data-tab="new"><span>開單</span><span class="k">N</span></button>
     <button class="navbtn" data-tab="delivery"><span>送貨單</span><span class="k">D</span></button>
     <button class="navbtn" data-tab="invoices"><span>單據</span><span class="k">I</span></button>
+    <button class="navbtn" data-tab="statement"><span>月結單</span><span class="k">S</span></button>
     <button class="navbtn" data-tab="customers"><span>客戶</span><span class="k">C</span></button>
     <button class="navbtn" data-tab="items"><span>產品</span><span class="k">P</span></button>
     <button class="navbtn" data-tab="tickets"><span>飯票</span><span class="k">T</span></button>
-    <button class="navbtn" data-tab="report"><span>月結</span><span class="k">R</span></button>
+    <button class="navbtn" data-tab="report"><span>報表</span><span class="k">R</span></button>
     <div class="railfoot">
       <button class="btn sm ghost" data-act="settings">⚙ 設定<span class="wide">・公司資料</span></button>
       <div class="dbdot" id="dbdot"><i></i><span>連接中…</span></div>
