@@ -549,9 +549,11 @@ function viewTickets(){
 
 /* ================= 月結單（將未付清嘅單整合交俾客人，可以扣除部分付款） ================= */
 function stmtState(){
-  if(!state.stmt) state.stmt = { customerId:"", asOf:todayISO(), excluded:{}, note:"" };
+  // alloc：每張單今次收幾多（人手填，或者由收款總額自動分配）；pay：收款表格
+  if(!state.stmt) state.stmt = { customerId:"", asOf:todayISO(), excluded:{}, note:"", alloc:{}, pay:newPay(), payLeft:0 };
   return state.stmt;
 }
+function newPay(){ return { date:todayISO(), amt:"", method:METHODS[0], ref:"" }; }
 const round2 = n => Math.round((Number(n)||0)*100)/100;
 /* 呢個客戶截至某日仲未付清嘅單（唔計草稿），最舊排先 */
 function openInvoicesFor(cid, asOf){
@@ -632,13 +634,23 @@ function rerenderStmtPreview(){
   const box = document.querySelector("aside .doc");
   if(box && state.stmt && state.stmt.customerId){ const tmp = document.createElement("div"); tmp.innerHTML = stmtDocHTML(state.stmt); box.replaceWith(tmp.firstElementChild); }
 }
-function paymentPreview(){
-  const el = $("#pm_preview"); if(!el || !state.stmt) return;
-  const amount = round2(($("#pm_amt")||{}).value);
-  if(!(amount>0)){ el.textContent = ""; return; }
-  const { parts, left } = allocatePayment(stmtInvoices(state.stmt), amount);
-  el.textContent = (parts.length ? "會扣：" + parts.map(p=>(p.inv.no||"")+" "+money(p.amount)).join("、") : "冇未付清嘅單可以扣")
-    + (left>0.004 ? "；多出 "+money(left)+" 冇單可以扣" : "");
+/* 今次收款合共幾多、有冇填多過嗰張單欠嘅數 */
+function allocSummary(st){
+  const list = stmtInvoices(st);
+  let total = 0, count = 0; const over = [];
+  list.forEach(v=>{
+    const a = round2(st.alloc[v.id]);
+    if(a>0){ total += a; count++; if(a > calc(v).due + 0.004) over.push((v.no||"")+" 只欠 "+money(calc(v).due)); }
+  });
+  if(!count) return "";
+  return "今次合共收 "+money(round2(total))+"（"+count+" 張單）"
+    + (st.payLeft>0.004 ? "；收款總額多出 "+money(st.payLeft)+" 冇單可以扣" : "")
+    + (over.length ? "；留意："+over.join("、") : "");
+}
+function paintAlloc(){
+  const st = state.stmt; if(!st) return;
+  document.querySelectorAll(".pmalloc").forEach(el=>{ if(el !== document.activeElement) el.value = st.alloc[el.dataset.id] || ""; });
+  const el = $("#pm_preview"); if(el) el.textContent = allocSummary(st);
 }
 function viewStatement(){
   const st = stmtState();
@@ -678,15 +690,21 @@ function viewStatement(){
       : '<div class="empty"><b>截至呢日冇未付清嘅單</b>'+esc(cu.name)+' 所有單據都收齊。</div>')
     + '</section>'
     + '<section class="card"><header><h2>記錄收款（扣除部分付款）</h2></header><div class="body" style="display:flex;flex-direction:column;gap:12px">'
-    +   '<div class="hint">客人畀咗部分款項，喺度輸入。系統會由最舊嘅單扣起（只計上面剔咗嘅單），扣咗嘅單會更新「已收」，月結單上面會顯示為扣除。</div>'
+    +   '<div class="hint">喺每張單嘅「今次收款」填客人實際畀咗幾多，只畀部分貨款就填實收嘅數。唔想逐張填，可以喺「收款總額」填總數，系統會由最舊嘅單扣起幫你填好，你再逐張改。扣咗嘅單會更新「已收」，月結單上面會顯示為扣除。</div>'
     +   '<div class="grid2">'
-    +     '<label class="fld"><span class="lbl">收款日期</span><input type="date" id="pm_date" value="'+esc(todayISO())+'"></label>'
-    +     '<label class="fld"><span class="lbl">金額 HKD</span><input type="number" step="0.01" min="0" class="num" id="pm_amt" placeholder="0.00"></label>'
-    +     '<label class="fld"><span class="lbl">收款方式</span><select id="pm_method">'+METHODS.map(m=>'<option>'+esc(m)+'</option>').join("")+'</select></label>'
-    +     '<label class="fld"><span class="lbl">參考編號／備註（選填）</span><input type="text" id="pm_ref" placeholder="例如：FPS 參考號"></label>'
+    +     '<label class="fld"><span class="lbl">收款日期</span><input type="date" id="pm_date" value="'+esc(st.pay.date)+'"></label>'
+    +     '<label class="fld"><span class="lbl">收款方式</span><select id="pm_method">'+METHODS.map(m=>'<option'+(m===st.pay.method?" selected":"")+'>'+esc(m)+'</option>').join("")+'</select></label>'
+    +     '<label class="fld"><span class="lbl">參考編號／備註（選填）</span><input type="text" id="pm_ref" value="'+esc(st.pay.ref)+'" placeholder="例如：FPS 參考號"></label>'
+    +     '<label class="fld"><span class="lbl">收款總額（選填，自動由最舊嘅單扣起）</span><input type="number" step="0.01" min="0" class="num" id="pm_amt" value="'+esc(st.pay.amt)+'" placeholder="0.00"></label>'
     +   '</div>'
-    +   '<div id="pm_preview" class="hint" style="color:var(--accent)"></div>'
-    +   '<div class="row"><button class="btn pri" data-act="pm-save"'+(list.length?"":" disabled")+'>記錄收款並扣數</button></div>'
+    +   (list.length ? '<div class="tbl-wrap"><table class="stmt-tbl"><thead><tr><th>單號</th><th class="num">尚欠</th><th class="num" style="width:150px">今次收款 HKD</th></tr></thead><tbody>'
+          + list.map(v=>'<tr><td style="font-family:var(--mono);white-space:nowrap">'+esc(v.no||"—")+'<br><span class="hint" style="font-family:var(--ui)">'+esc(fmtHK(v.date))+'</span></td>'
+            + '<td class="num">'+money(calc(v).due)+'</td>'
+            + '<td><input type="number" step="0.01" min="0" class="num pmalloc" data-id="'+esc(v.id)+'" value="'+esc(st.alloc[v.id]||"")+'" placeholder="0.00" aria-label="'+esc(v.no||"")+' 今次收款"></td></tr>').join("")
+          + '</tbody></table></div>' : "")
+    +   '<div id="pm_preview" class="hint" style="color:var(--accent)">'+esc(allocSummary(st))+'</div>'
+    +   '<div class="row"><button class="btn pri" data-act="pm-save"'+(list.length?"":" disabled")+'>記錄收款並扣數</button>'
+    +     '<button class="btn ghost" data-act="pm-clear">清空收款</button></div>'
     +   (pays.length ? '<div><div class="lbl">已收款項（會印喺月結單）</div><div class="tbl-wrap"><table><tbody>'
           + pays.map(p=>'<tr><td class="hint" style="white-space:nowrap">'+esc(fmtHK(p.date))+'</td><td style="font-family:var(--mono)">'+esc(p.no||"")+'</td><td class="hint">'+esc([p.method, p.ref].filter(Boolean).join(" ・ "))+'</td><td class="num">'+money(p.amount)+'</td></tr>').join("")
           + '</tbody></table></div></div>' : "")
@@ -1517,16 +1535,22 @@ document.addEventListener("click", async e=>{
       state.modal=null; await remove("customers", id);
       removeDeliveryCustomer(id).catch(saveFail);
       state.deliveryCustomers = state.deliveryCustomers.filter(x=>x.id!==id); return;
-    case "cust-stmt": { const st = stmtState(); st.customerId = id; st.excluded = {}; state.tab = "statement"; render(); return; }
+    case "cust-stmt": { const st = stmtState(); st.customerId = id; st.excluded = {}; st.alloc = {}; st.pay.amt = ""; st.payLeft = 0; state.tab = "statement"; render(); return; }
     case "st-pdf": { const st = stmtState(); if(!st.customerId) return; await exportDocPDF(stmtDocHTML(st), stmtFilename(st)); return; }
     case "st-print": { const st = stmtState(); if(!st.customerId) return; printHTML(stmtDocHTML(st), stmtFilename(st).slice(0,-4)); return; }
+    case "pm-clear": { const st = stmtState(); st.alloc = {}; st.pay.amt = ""; st.payLeft = 0; render(); return; }
     case "pm-save": {
       const st = stmtState();
-      const amount = round2($("#pm_amt").value);
-      if(!(amount>0)){ toast("請輸入收款金額"); return; }
-      const date = $("#pm_date").value || todayISO(), method = $("#pm_method").value, ref = $("#pm_ref").value.trim();
-      const { parts, left } = allocatePayment(stmtInvoices(st), amount);
-      if(!parts.length){ toast("冇未付清嘅單可以扣"); return; }
+      const parts = [], over = [];
+      stmtInvoices(st).forEach(v=>{
+        const a = round2(st.alloc[v.id]);
+        if(a<=0) return;
+        if(a > calc(v).due + 0.004) over.push(v); else parts.push({inv:v, amount:a});
+      });
+      if(over.length){ toast(over.map(v=>(v.no||"")+" 只欠 "+money(calc(v).due)).join("、")+"，請改細今次收款"); return; }
+      if(!parts.length){ toast("請喺「今次收款」填金額，或者填收款總額"); return; }
+      const date = st.pay.date || todayISO(), method = st.pay.method || METHODS[0], ref = (st.pay.ref||"").trim();
+      const left = st.payLeft, amount = round2(parts.reduce((a,p)=>a+p.amount,0) + (left>0.004 ? left : 0));
       const pid = uid("pay");
       putMany("invoices", parts.map(part=>{
         const v = part.inv;
@@ -1534,6 +1558,7 @@ document.addEventListener("click", async e=>{
         return { id:v.id, data:Object.assign({}, v, {paid: round2(calc(v).paid + part.amount), paidDate: date, method, payments}) };
       }));
       toast("已記錄收款 "+money(round2(amount-left))+"，扣咗 "+parts.length+" 張單"+(left>0.004 ? "；多出 "+money(left)+" 冇單可以扣" : ""));
+      st.alloc = {}; st.pay = Object.assign(newPay(), {date, method}); st.payLeft = 0;
       render(); return; }
     case "cust-invoice": state.draft = newDraft(); state.draft.customerId = id; applyCustomerDefaults(); state.tab="new"; render(); return;
 
@@ -1644,7 +1669,19 @@ document.addEventListener("input", e=>{
     syncPick(); return;
   }
   if(t.id==="st_note"){ stmtState().note = t.value; rerenderStmtPreview(); return; }
-  if(t.id==="pm_amt"){ paymentPreview(); return; }
+  if(/^pm_(date|method|ref)$/.test(t.id)){ stmtState().pay[t.id.slice(3)] = t.value; return; }
+  if(t.id==="pm_amt"){
+    // 收款總額：由最舊嘅單扣起，填入每張單嘅「今次收款」，之後仲可以逐張改
+    const st = stmtState(); st.pay.amt = t.value; st.alloc = {};
+    const { parts, left } = allocatePayment(stmtInvoices(st), round2(t.value));
+    parts.forEach(p=>{ st.alloc[p.inv.id] = String(p.amount); });
+    st.payLeft = round2(t.value) > 0 ? left : 0;
+    paintAlloc(); return;
+  }
+  if(t.classList && t.classList.contains("pmalloc")){
+    const st = stmtState(); st.alloc[t.dataset.id] = t.value; st.payLeft = 0;
+    paintAlloc(); return;
+  }
   if(t.dataset.dn && state.dnDraft){
     const dn = state.dnDraft, f = t.dataset.dn;
     dn[f] = t.value;
@@ -1685,7 +1722,8 @@ document.addEventListener("change", e=>{
   if(t.dataset.f==="no"){ render(); return; }
   if(t.dataset.fi){ state.invFilter[t.dataset.fi] = t.value; render(); return; }
   if(t.id==="rmonth"){ state.reportMonth = t.value; render(); return; }
-  if(t.id==="st_cust"){ const st = stmtState(); st.customerId = t.value; st.excluded = {}; render(); return; }
+  if(t.id==="st_cust"){ const st = stmtState(); st.customerId = t.value; st.excluded = {}; st.alloc = {}; st.pay.amt = ""; st.payLeft = 0; render(); return; }
+  if(/^pm_(date|method|ref)$/.test(t.id)){ stmtState().pay[t.id.slice(3)] = t.value; return; }
   if(t.id==="st_asof"){ stmtState().asOf = t.value || todayISO(); render(); return; }
   if(t.classList && t.classList.contains("stchk")){ const st = stmtState(); st.excluded[t.dataset.id] = !t.checked; render(); return; }
   if(t.id==="dn_month" && state.dnImport){ state.dnImport.month = t.value; render(); return; }
